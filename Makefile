@@ -11,12 +11,6 @@ AV_VELS_FILE=./av_vels.dat
 REF_FINAL_STATE_FILE=check/128x128.final_state.dat
 REF_AV_VELS_FILE=check/128x128.av_vels.dat
 
-profile: 
-	$(CC) $(CFLAGS) -pg $^ $(LIBS) -o $@
-
-debug: 
-	$(CC) $(CFLAGS) -pg -DDEBUG $^ $(LIBS) -o $@
-
 all: $(EXE)
 
 $(EXE): $(EXE).c
@@ -30,3 +24,8 @@ check:
 clean:
 	rm -f $(EXE)
 
+profile: 
+	tau_cc.sh $(CFLAGS) -pg $(EXE).c $(LIBS) -o $(EXE)
+
+debug: 
+	$(CC) $(CFLAGS) -pg -DDEBUG $(EXE).c $(LIBS) -o $(EXE)
