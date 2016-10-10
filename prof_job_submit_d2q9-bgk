@@ -17,7 +17,7 @@ application="./d2q9-bgk"
 options="input_128x256.params obstacles_128x256.dat"
 
 # load the VTune module
-module add intel-cluster-studio/vtune/vtune-2013 
+module add intel-cluster-studio/vtune/vtune-2013
 
 ###############################################################
 ### You should not have to change anything below this line ####
