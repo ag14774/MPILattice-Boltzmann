@@ -59,6 +59,7 @@
 #define NSPEEDS         9
 #define FINALSTATEFILE  "final_state.dat"
 #define AVVELSFILE      "av_vels.dat"
+#define BLOCKSIZE       16
 
 /* struct to hold the parameter values */
 typedef struct
@@ -86,6 +87,7 @@ typedef struct
 int initialise(const char* paramfile, const char* obstaclefile,
                t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
                int** obstacles_ptr, double** av_vels_ptr);
+void preprocess_obstacles(int* obstacles,const t_param params);
 
 /*
 ** The main calculation methods.
@@ -135,6 +137,7 @@ int main(int argc, char* argv[])
   double tic, toc;              /* floating point numbers to calculate elapsed wallclock time */
   double usrtim;                /* floating point number to record elapsed user CPU time */
   double systim;                /* floating point number to record elapsed system CPU time */
+ 
 
   /* parse the command line */
   if (argc != 3)
@@ -207,7 +210,7 @@ int accelerate_flow(const t_param params, t_speed* cells, int* obstacles)
   {
     /* if the cell is not occupied and
     ** we don't send a negative density */
-    if (!obstacles[ii * params.nx + jj]
+    if (obstacles[ii * params.nx + jj]<0
         && (cells[ii * params.nx + jj].speeds[3] - w1) > 0.0
         && (cells[ii * params.nx + jj].speeds[6] - w2) > 0.0
         && (cells[ii * params.nx + jj].speeds[7] - w2) > 0.0)
@@ -265,7 +268,7 @@ int rebound(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obsta
     for (int jj = 0; jj < params.nx; jj++)
     {
       /* if the cell contains an obstacle */
-      if (obstacles[ii * params.nx + jj])
+      if (obstacles[ii * params.nx + jj]>0)
       {
         /* called after propagate, so taking values from scratch space
         ** mirroring, and writing into main grid */
@@ -296,99 +299,104 @@ int collision(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obs
   ** NB the collision step is called after
   ** the propagate step and so values of interest
   ** are in the scratch-space grid */
-  for (int ii = 0; ii < params.ny; ii++)
+  for (int ii = 0; ii < params.ny*params.nx; ii+=BLOCKSIZE)
   {
-    for (int jj = 0; jj < params.nx; jj++)
-    {
-      /* don't consider occupied cells */
-      if (!obstacles[ii * params.nx + jj])
-      {
-        /* compute local density total */
-        double local_density = 0.0;
+    int jj = ii;
+    int value;
+    int absolute;
+    do{
+        value = obstacles[jj];
+        absolute = abs(value);
+        if(value<0){
+            for(int ci=jj;ci<jj-value;ci++){
+                /* compute local density total */
+                double local_density = 0.0;
 
-        for (int kk = 0; kk < NSPEEDS; kk++)
-        {
-          local_density += tmp_cells[ii * params.nx + jj].speeds[kk];
+                for (int kk = 0; kk < NSPEEDS; kk++)
+                {
+                    local_density += tmp_cells[ci].speeds[kk];
+                }
+
+                /* compute x velocity component. NO DIVISION BY LOCAL DENSITY*/
+                double u_x_noLD = (tmp_cells[ci].speeds[1]
+                            + tmp_cells[ci].speeds[5]
+                            + tmp_cells[ci].speeds[8]
+                            - (tmp_cells[ci].speeds[3]
+                            + tmp_cells[ci].speeds[6]
+                            + tmp_cells[ci].speeds[7]));
+                /* compute y velocity component. NO DIVISION BY LOCAL DENSITY */
+                double u_y_noLD = (tmp_cells[ci].speeds[2]
+                            + tmp_cells[ci].speeds[5]
+                            + tmp_cells[ci].speeds[6]
+                            - (tmp_cells[ci].speeds[4]
+                            + tmp_cells[ci].speeds[7]
+                            + tmp_cells[ci].speeds[8]));
+
+                /* velocity squared */
+                double u_sq_noLD = u_x_noLD * u_x_noLD + u_y_noLD * u_y_noLD;
+
+                /* directional velocity components */
+                double u_noLD[NSPEEDS];
+                u_noLD[1] =   u_x_noLD;             /* east */
+                u_noLD[2] =              u_y_noLD;  /* north */
+                u_noLD[3] = - u_x_noLD;             /* west */
+                u_noLD[4] =            - u_y_noLD;  /* south */
+                u_noLD[5] =   u_x_noLD + u_y_noLD;  /* north-east */
+                u_noLD[6] = - u_x_noLD + u_y_noLD;  /* north-west */
+                u_noLD[7] = - u_x_noLD - u_y_noLD;  /* south-west */
+                u_noLD[8] =   u_x_noLD - u_y_noLD;  /* south-east */
+
+                /* equilibrium densities */
+                double d_equ[NSPEEDS];
+                /* zero velocity density: weight w0 */
+                d_equ[0] = w0 * (2*local_density*local_density*c_sq-u_sq_noLD) 
+                                / (2*local_density*c_sq);
+                /* axis speeds: weight w1 */
+                d_equ[1] = w1 * ( two_c_sq_sq*local_density*local_density 
+                                    + 2*u_noLD[1]*c_sq*local_density 
+                                    + u_noLD[1]*u_noLD[1]
+                                    - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
+                d_equ[2] = w1 * ( two_c_sq_sq*local_density*local_density 
+                                    + 2*u_noLD[2]*c_sq*local_density 
+                                    + u_noLD[2]*u_noLD[2]
+                                    - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
+                d_equ[3] = w1 * ( two_c_sq_sq*local_density*local_density 
+                                    + 2*u_noLD[3]*c_sq*local_density 
+                                    + u_noLD[3]*u_noLD[3]
+                                    - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
+                d_equ[4] = w1 * ( two_c_sq_sq*local_density*local_density 
+                                    + 2*u_noLD[4]*c_sq*local_density 
+                                    + u_noLD[4]*u_noLD[4]
+                                    - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
+                /* diagonal speeds: weight w2 */
+                d_equ[5] = w2 * ( two_c_sq_sq*local_density*local_density 
+                                    + 2*u_noLD[5]*c_sq*local_density 
+                                    + u_noLD[5]*u_noLD[5]
+                                    - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
+                d_equ[6] = w2 * ( two_c_sq_sq*local_density*local_density 
+                                    + 2*u_noLD[6]*c_sq*local_density 
+                                    + u_noLD[6]*u_noLD[6]
+                                    - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
+                d_equ[7] = w2 * ( two_c_sq_sq*local_density*local_density 
+                                    + 2*u_noLD[7]*c_sq*local_density 
+                                    + u_noLD[7]*u_noLD[7]
+                                    - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
+                d_equ[8] = w2 * ( two_c_sq_sq*local_density*local_density 
+                                    + 2*u_noLD[8]*c_sq*local_density 
+                                    + u_noLD[8]*u_noLD[8]
+                                    - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
+
+                /* relaxation step */
+                for (int kk = 0; kk < NSPEEDS; kk++)
+                {
+                    cells[ci].speeds[kk] = tmp_cells[ci].speeds[kk]
+                                                        + params.omega
+                                                        * (d_equ[kk] - tmp_cells[ci].speeds[kk]);
+                }
+            }
         }
-
-        /* compute x velocity component. NO DIVISION BY LOCAL DENSITY*/
-        double u_x_noLD = (tmp_cells[ii * params.nx + jj].speeds[1]
-                      + tmp_cells[ii * params.nx + jj].speeds[5]
-                      + tmp_cells[ii * params.nx + jj].speeds[8]
-                      - (tmp_cells[ii * params.nx + jj].speeds[3]
-                         + tmp_cells[ii * params.nx + jj].speeds[6]
-                         + tmp_cells[ii * params.nx + jj].speeds[7]));
-        /* compute y velocity component. NO DIVISION BY LOCAL DENSITY */
-        double u_y_noLD = (tmp_cells[ii * params.nx + jj].speeds[2]
-                      + tmp_cells[ii * params.nx + jj].speeds[5]
-                      + tmp_cells[ii * params.nx + jj].speeds[6]
-                      - (tmp_cells[ii * params.nx + jj].speeds[4]
-                         + tmp_cells[ii * params.nx + jj].speeds[7]
-                         + tmp_cells[ii * params.nx + jj].speeds[8]));
-
-        /* velocity squared */
-        double u_sq_noLD = u_x_noLD * u_x_noLD + u_y_noLD * u_y_noLD;
-
-        /* directional velocity components */
-        double u_noLD[NSPEEDS];
-        u_noLD[1] =   u_x_noLD;             /* east */
-        u_noLD[2] =              u_y_noLD;  /* north */
-        u_noLD[3] = - u_x_noLD;             /* west */
-        u_noLD[4] =            - u_y_noLD;  /* south */
-        u_noLD[5] =   u_x_noLD + u_y_noLD;  /* north-east */
-        u_noLD[6] = - u_x_noLD + u_y_noLD;  /* north-west */
-        u_noLD[7] = - u_x_noLD - u_y_noLD;  /* south-west */
-        u_noLD[8] =   u_x_noLD - u_y_noLD;  /* south-east */
-
-        /* equilibrium densities */
-        double d_equ[NSPEEDS];
-        /* zero velocity density: weight w0 */
-        d_equ[0] = w0 * (2*local_density*local_density*c_sq-u_sq_noLD) 
-                            / (2*local_density*c_sq);
-        /* axis speeds: weight w1 */
-        d_equ[1] = w1 * ( two_c_sq_sq*local_density*local_density 
-                            + 2*u_noLD[1]*c_sq*local_density 
-                            + u_noLD[1]*u_noLD[1]
-                            - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
-        d_equ[2] = w1 * ( two_c_sq_sq*local_density*local_density 
-                            + 2*u_noLD[2]*c_sq*local_density 
-                            + u_noLD[2]*u_noLD[2]
-                            - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
-        d_equ[3] = w1 * ( two_c_sq_sq*local_density*local_density 
-                            + 2*u_noLD[3]*c_sq*local_density 
-                            + u_noLD[3]*u_noLD[3]
-                            - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
-        d_equ[4] = w1 * ( two_c_sq_sq*local_density*local_density 
-                            + 2*u_noLD[4]*c_sq*local_density 
-                            + u_noLD[4]*u_noLD[4]
-                            - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
-        /* diagonal speeds: weight w2 */
-        d_equ[5] = w2 * ( two_c_sq_sq*local_density*local_density 
-                            + 2*u_noLD[5]*c_sq*local_density 
-                            + u_noLD[5]*u_noLD[5]
-                            - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
-        d_equ[6] = w2 * ( two_c_sq_sq*local_density*local_density 
-                            + 2*u_noLD[6]*c_sq*local_density 
-                            + u_noLD[6]*u_noLD[6]
-                            - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
-        d_equ[7] = w2 * ( two_c_sq_sq*local_density*local_density 
-                            + 2*u_noLD[7]*c_sq*local_density 
-                            + u_noLD[7]*u_noLD[7]
-                            - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
-        d_equ[8] = w2 * ( two_c_sq_sq*local_density*local_density 
-                            + 2*u_noLD[8]*c_sq*local_density 
-                            + u_noLD[8]*u_noLD[8]
-                            - u_sq_noLD*c_sq ) / (local_density*two_c_sq_sq);
-
-        /* relaxation step */
-        for (int kk = 0; kk < NSPEEDS; kk++)
-        {
-          cells[ii * params.nx + jj].speeds[kk] = tmp_cells[ii * params.nx + jj].speeds[kk]
-                                                  + params.omega
-                                                  * (d_equ[kk] - tmp_cells[ii * params.nx + jj].speeds[kk]);
-        }
-      }
-    }
+        jj += absolute;
+    }while(jj<ii+BLOCKSIZE);
   }
 
   return EXIT_SUCCESS;
@@ -408,7 +416,7 @@ double av_velocity(const t_param params, t_speed* cells, int* obstacles)
     for (int jj = 0; jj < params.nx; jj++)
     {
       /* ignore occupied cells */
-      if (!obstacles[ii * params.nx + jj])
+      if (obstacles[ii * params.nx + jj]<0)
       {
         /* local density total */
         double local_density = 0.0;
@@ -591,6 +599,8 @@ int initialise(const char* paramfile, const char* obstaclefile,
   /* and close the file */
   fclose(fp);
 
+  preprocess_obstacles(*obstacles_ptr,*params);
+
   /*
   ** allocate space to hold a record of the avarage velocities computed
   ** at each timestep
@@ -598,6 +608,57 @@ int initialise(const char* paramfile, const char* obstaclefile,
   *av_vels_ptr = (double*)malloc(sizeof(double) * params->maxIters);
 
   return EXIT_SUCCESS;
+}
+
+//reverse [begin, end]
+void reverse_array(int* begin, int* end){
+    while(begin<end){
+        int temp = *begin;
+        *begin++ = *end;
+        *end-- = temp;
+    }
+}
+
+void preprocess_obstacles(int* obstacles,const t_param params){
+    for(int ii=0;ii<params.nx*params.ny;ii+=BLOCKSIZE){
+        int obstacle_mode = 1^obstacles[ii];
+        int begin_index = ii;
+        int jj=ii;
+        for(jj=ii;jj<ii+BLOCKSIZE;jj++){
+            if(!obstacles[jj]){
+                if(obstacle_mode){
+                    reverse_array(&obstacles[begin_index],&obstacles[jj-1]);
+                    obstacles[jj]--;
+                    obstacle_mode = 0;
+                    begin_index = jj;
+                }
+                else{
+                    obstacles[jj] = obstacles[jj-1] - 1;
+                }
+            }
+            else{
+                if(obstacle_mode){
+                    obstacles[jj] = obstacles[jj-1] + 1;
+                }
+                else{
+                    reverse_array(&obstacles[begin_index],&obstacles[jj-1]);
+                    obstacle_mode = 1;
+                    begin_index = jj;
+                }
+
+            }
+        }
+        reverse_array(&obstacles[begin_index],&obstacles[jj-1]);
+    }
+
+#ifdef DEBUG
+    for(int ii=0;ii<params.nx*params.ny;ii+=BLOCKSIZE){
+        for(int jj=ii;jj<ii+BLOCKSIZE;jj++){
+            printf("%4d ",obstacles[jj]);
+        }
+        printf("\n");
+    }
+#endif
 }
 
 int finalise(const t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
@@ -669,7 +730,7 @@ int write_values(const t_param params, t_speed* cells, int* obstacles, double* a
     for (int jj = 0; jj < params.nx; jj++)
     {
       /* an occupied cell */
-      if (obstacles[ii * params.nx + jj])
+      if (obstacles[ii * params.nx + jj]>0)
       {
         u_x = u_y = u = 0.0;
         pressure = params.density * c_sq;
