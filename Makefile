@@ -25,7 +25,7 @@ clean:
 	rm -f $(EXE)
 
 profile: 
-	tau_cc.sh $(CFLAGS) $(EXE).c $(LIBS) -o $(EXE)
+	tau_cc.sh -g $(CFLAGS) $(EXE).c $(LIBS) -o $(EXE)
 
 debug: 
 	$(CC) $(CFLAGS) -DDEBUG $(EXE).c $(LIBS) -o $(EXE)

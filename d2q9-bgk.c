@@ -72,6 +72,7 @@ typedef struct
   double density;       /* density per link */
   double accel;         /* density redistribution */
   double omega;         /* relaxation parameter */
+  int numOfFreeCells;
 } t_param;
 
 /* struct to hold the 'speed' values */
@@ -95,7 +96,6 @@ void preprocess_obstacles(int* obstacles,const t_param params);
 ** timestep calls, in order, the functions:
 ** accelerate_flow(), propagate(), rebound() & collision()
 */
-int timestep(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
 //int propagate(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr);
 //int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
@@ -161,7 +161,8 @@ int main(int argc, char* argv[])
 
   for (int tt = 0; tt < params.maxIters; tt++)
   {
-    timestep(params, &cells, &tmp_cells, obstacles);
+    accelerate_flow(params, cells, obstacles);
+    collision(params, &cells, &tmp_cells, obstacles);
     av_vels[tt] = av_velocity(params, cells, obstacles);
 #ifdef DEBUG
     printf("==timestep: %d==\n", tt);
@@ -188,22 +189,6 @@ int main(int argc, char* argv[])
   finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels);
 
   return EXIT_SUCCESS;
-}
-
-int timestep(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles)
-{
-  accelerate_flow(params, *cells_ptr, obstacles);
-  //propagate(params, cells_ptr, tmp_cells_ptr);
-  //rebound(params, cells, tmp_cells, obstacles);
-  collision(params, cells_ptr, tmp_cells_ptr, obstacles);
-  return EXIT_SUCCESS;
-}
-
-inline void swap(double* a, double* b){
-    double temp;
-    temp = *a;
-    *a = *b;
-    *b = temp;
 }
 
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles)
@@ -411,7 +396,6 @@ int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
 
 double av_velocity(const t_param params, t_speed* cells, int* obstacles)
 {
-  int    tot_cells = 0;  /* no. of cells used in calculation */
   double tot_u;          /* accumulated magnitudes of velocity for each cell */
 
   /* initialise */
@@ -451,13 +435,11 @@ double av_velocity(const t_param params, t_speed* cells, int* obstacles)
                      / local_density;
         /* accumulate the norm of x- and y- velocity components */
         tot_u += sqrt((u_x * u_x) + (u_y * u_y));
-        /* increase counter of inspected cells */
-        ++tot_cells;
       }
     }
   }
 
-  return tot_u / (double)tot_cells;
+  return tot_u / params.numOfFreeCells;
 }
 
 int initialise(const char* paramfile, const char* obstaclefile,
@@ -510,6 +492,8 @@ int initialise(const char* paramfile, const char* obstaclefile,
 
   /* and close up the file */
   fclose(fp);
+
+  params->numOfFreeCells = params->nx*params->ny;
 
   /*
   ** Allocate memory.
@@ -600,6 +584,8 @@ int initialise(const char* paramfile, const char* obstaclefile,
     if (blocked != 1) die("obstacle blocked value should be 1", __LINE__, __FILE__);
 
     /* assign to array */
+    if(!(*obstacles_ptr)[yy * params->nx + xx])
+        params->numOfFreeCells--;
     (*obstacles_ptr)[yy * params->nx + xx] = blocked;
   }
 
