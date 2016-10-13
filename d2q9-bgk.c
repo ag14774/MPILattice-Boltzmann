@@ -72,7 +72,7 @@ typedef struct
   double density;       /* density per link */
   double accel;         /* density redistribution */
   double omega;         /* relaxation parameter */
-  int numOfFreeCells;
+  double free_cells_inv;
 } t_param;
 
 /* struct to hold the 'speed' values */
@@ -99,7 +99,9 @@ void preprocess_obstacles(int* obstacles,const t_param params);
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
 //int propagate(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr);
 //int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
-int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
+//int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
+void timestep(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles, double* avg);
+
 int write_values(const t_param params, t_speed* cells, int* obstacles, double* av_vels);
 
 /* finalise, including freeing up allocated memory */
@@ -162,8 +164,8 @@ int main(int argc, char* argv[])
   for (int tt = 0; tt < params.maxIters; tt++)
   {
     accelerate_flow(params, cells, obstacles);
-    collision(params, &cells, &tmp_cells, obstacles);
-    av_vels[tt] = av_velocity(params, cells, obstacles);
+    timestep(params, &cells, &tmp_cells, obstacles, &av_vels[tt]);
+    //av_vels[tt] = av_velocity(params, cells, obstacles);
 #ifdef DEBUG
     printf("==timestep: %d==\n", tt);
     printf("av velocity: %.12E\n", av_vels[tt]);
@@ -258,14 +260,16 @@ int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, 
   return EXIT_SUCCESS;
 }
 */
-int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles)
+void timestep(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles, double* avg)
 {
   static const double c_sq = 1.0 / 3.0; /* square of speed of sound */
   static const double twooverthree = 2.0/3.0;
   static const double two_c_sq_sq = 2.0 / 9.0;
-  static const double w0 = 4.0 / 81.0;  /* weighting factor */
-  static const double w1 = 1.0 / 9.0;  /* weighting factor */
-  static const double w2 = 1.0 / 36.0; /* weighting factor */
+  static const double w0 = 4.0 / 81.0 * 4.5;  /* weighting factor */
+  static const double w1 = 1.0 / 9.0 * 4.5 ;  /* weighting factor */
+  static const double w2 = 1.0 / 36.0 * 4.5; /* weighting factor */
+  double oneminusomega = 1.0 - params.omega;
+  double tot_u = 0.0;
   t_speed* cells = *cells_ptr;
   t_speed* tmp_cells = *tmp_cells_ptr;
 
@@ -311,21 +315,21 @@ int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
             }
 
             /* compute x velocity component. NO DIVISION BY LOCAL DENSITY*/
-            const double u_x = (tmp_cell->speeds[1]
+            double u_x = (tmp_cell->speeds[1]
                         + tmp_cell->speeds[5]
                         + tmp_cell->speeds[8]
                         - tmp_cell->speeds[3]
                         - tmp_cell->speeds[6]
                         - tmp_cell->speeds[7]);
             /* compute y velocity component. NO DIVISION BY LOCAL DENSITY */
-            const double u_y = (tmp_cell->speeds[2]
+            double u_y = (tmp_cell->speeds[2]
                         + tmp_cell->speeds[5]
                         + tmp_cell->speeds[6]
                         - tmp_cell->speeds[4]
                         - tmp_cell->speeds[7]
                         - tmp_cell->speeds[8]);
 
-
+//EQUATIONS ARE VERY DIFFERENT BUT STILL DO THE SAME THING.
             const double u_x_sq = u_x * u_x;
             const double u_y_sq = u_y * u_y;
             const double u_xy   = u_x + u_y;
@@ -334,46 +338,64 @@ int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
             const double c_sq_ld_2 = twooverthree * local_density;
             /* velocity squared */
             const double u_sq = u_x_sq + u_y_sq;
-            const double ldinv = 4.5/local_density;
+            const double ldinvomega = params.omega/local_density;
 
             /* equilibrium densities */
             double d_equ[NSPEEDS];
             /* zero velocity density: weight w0 */
-            d_equ[0] = w0 * (2*ld_sq-3*u_sq) * ldinv;
+            d_equ[0] = w0 * (2*ld_sq-3*u_sq) * ldinvomega;
             /* axis speeds: weight w1 */
             d_equ[1] = w1 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_x 
                                 + u_x_sq - u_sq*c_sq ) 
-                                * ldinv;
+                                * ldinvomega;
             d_equ[2] = w1 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_y 
                                 + u_y_sq - u_sq*c_sq )
-                                * ldinv;
+                                * ldinvomega;
             d_equ[3] = w1 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_x 
                                 + u_x_sq - u_sq*c_sq ) 
-                                * ldinv;
+                                * ldinvomega;
             d_equ[4] = w1 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_y
                                 + u_y_sq - u_sq*c_sq ) 
-                                * ldinv;
+                                * ldinvomega;
             /* diagonal speeds: weight w2 */
             d_equ[5] = w2 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_xy 
                                 + u_xy*u_xy - u_sq*c_sq ) 
-                                * ldinv;
+                                * ldinvomega;
             d_equ[6] = w2 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_xy2 
                                 + u_xy2*u_xy2 - u_sq*c_sq ) 
-                                * ldinv;
+                                * ldinvomega;
             d_equ[7] = w2 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_xy
                                 + u_xy*u_xy - u_sq*c_sq ) 
-                                * ldinv;
+                                * ldinvomega;
             d_equ[8] = w2 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_xy2
                                 + u_xy2*u_xy2 - u_sq*c_sq ) 
-                                * ldinv;
+                                * ldinvomega;
 
+            
+
+            local_density = 0.0;
             /* relaxation step */
             for (int kk = 0; kk < NSPEEDS; kk++)
             {
-                tmp_cell->speeds[kk] = tmp_cell->speeds[kk]
-                                                    + params.omega
-                                                    * (d_equ[kk] - tmp_cell->speeds[kk]);
+                tmp_cell->speeds[kk] = tmp_cell->speeds[kk]*oneminusomega + d_equ[kk];
+                local_density += tmp_cell->speeds[kk];
             }
+            const double ldinv = 1.0/local_density;
+            u_x = (tmp_cell->speeds[1]
+                        + tmp_cell->speeds[5]
+                        + tmp_cell->speeds[8]
+                        - tmp_cell->speeds[3]
+                        - tmp_cell->speeds[6]
+                        - tmp_cell->speeds[7]);
+            /* compute y velocity component. NO DIVISION BY LOCAL DENSITY */
+            u_y = (tmp_cell->speeds[2]
+                        + tmp_cell->speeds[5]
+                        + tmp_cell->speeds[6]
+                        - tmp_cell->speeds[4]
+                        - tmp_cell->speeds[7]
+                        - tmp_cell->speeds[8]);
+            tot_u += sqrt(u_x*u_x + u_y*u_y) * ldinv;
+
         }
         else{
             tmp_cell->speeds[0] = cells[ii * params.nx + jj].speeds[0];
@@ -391,7 +413,7 @@ int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
   t_speed* temp = *cells_ptr;
   *cells_ptr = *tmp_cells_ptr;
   *tmp_cells_ptr = temp;
-  return EXIT_SUCCESS;
+  *avg = tot_u * params.free_cells_inv;
 }
 
 double av_velocity(const t_param params, t_speed* cells, int* obstacles)
@@ -416,7 +438,6 @@ double av_velocity(const t_param params, t_speed* cells, int* obstacles)
         {
           local_density += cells[ii * params.nx + jj].speeds[kk];
         }
-
         /* x-component of velocity */
         double u_x = (cells[ii * params.nx + jj].speeds[1]
                       + cells[ii * params.nx + jj].speeds[5]
@@ -439,7 +460,7 @@ double av_velocity(const t_param params, t_speed* cells, int* obstacles)
     }
   }
 
-  return tot_u / params.numOfFreeCells;
+  return tot_u * params.free_cells_inv;
 }
 
 int initialise(const char* paramfile, const char* obstaclefile,
@@ -493,7 +514,7 @@ int initialise(const char* paramfile, const char* obstaclefile,
   /* and close up the file */
   fclose(fp);
 
-  params->numOfFreeCells = params->nx*params->ny;
+  int numOfFreeCells = params->nx*params->ny;
 
   /*
   ** Allocate memory.
@@ -585,9 +606,10 @@ int initialise(const char* paramfile, const char* obstaclefile,
 
     /* assign to array */
     if(!(*obstacles_ptr)[yy * params->nx + xx])
-        params->numOfFreeCells--;
+        numOfFreeCells--;
     (*obstacles_ptr)[yy * params->nx + xx] = blocked;
   }
+  params->free_cells_inv = 1.0/numOfFreeCells;
 
   /* and close the file */
   fclose(fp);
