@@ -290,13 +290,15 @@ int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
   ** are in the scratch-space grid */
   for (int ii = 0; ii < params.ny; ii++)
   {
+    int y_n = ii+1;
+    if(y_n == params.ny) y_n = 0;
+    int y_s = (ii == 0) ? (params.ny - 1) : (ii - 1);
     for(int jj = 0; jj < params.nx; jj++){
         /* determine indices of axis-direction neighbours
         ** respecting periodic boundary conditions (wrap around) */
-        int y_n = (ii + 1) % params.ny;
-        int x_e = (jj + 1) % params.nx;
-        int y_s = (ii == 0) ? (ii + params.ny - 1) : (ii - 1);
-        int x_w = (jj == 0) ? (jj + params.nx - 1) : (jj - 1);
+        int x_e = jj + 1;
+        if (x_e == params.nx) x_e = 0;
+        int x_w = (jj == 0) ? (params.nx - 1) : (jj - 1);
         /* propagate densities to neighbouring cells, following
         ** appropriate directions of travel and writing into
         ** scratch space grid */
@@ -304,15 +306,6 @@ int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
 
         //Reverse the operation such that after each iteration the current cell is fully updated
         //and hence the loop can be merged with the next step
-        //tmp_cell->speeds[0] = cells[ii * params.nx + jj].speeds[0];
-        //tmp_cell->speeds[1] = cells[ii * params.nx + x_w].speeds[1];
-        //tmp_cell->speeds[2] = cells[y_s * params.nx + jj].speeds[2];
-        //tmp_cell->speeds[3] = cells[ii * params.nx + x_e].speeds[3];
-        //tmp_cell->speeds[4] = cells[y_n * params.nx + jj].speeds[4];
-        //tmp_cell->speeds[5] = cells[y_s * params.nx + x_w].speeds[5];
-        //tmp_cell->speeds[6] = cells[y_s * params.nx + x_e].speeds[6];
-        //tmp_cell->speeds[7] = cells[y_n * params.nx + x_e].speeds[7];
-        //tmp_cell->speeds[8] = cells[y_n * params.nx + x_w].speeds[8];
         if(!obstacles[ii*params.nx+jj]){
             tmp_cell->speeds[0] = cells[ii * params.nx + jj].speeds[0];
             tmp_cell->speeds[1] = cells[ii * params.nx + x_w].speeds[1];
@@ -407,13 +400,6 @@ int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
             tmp_cell->speeds[8] = cells[y_s * params.nx + x_e].speeds[6];
             tmp_cell->speeds[5] = cells[y_n * params.nx + x_e].speeds[7];
             tmp_cell->speeds[6] = cells[y_n * params.nx + x_w].speeds[8];
-
-            /* called after propagate, so taking values from scratch space
-            ** mirroring, and writing into main grid */
-            //swap(&(tmp_cell->speeds[1]),&(tmp_cell->speeds[3]));
-            //swap(&(tmp_cell->speeds[2]),&(tmp_cell->speeds[4]));
-            //swap(&(tmp_cell->speeds[5]),&(tmp_cell->speeds[7]));
-            //swap(&(tmp_cell->speeds[6]),&(tmp_cell->speeds[8]));
         }
     }
   }

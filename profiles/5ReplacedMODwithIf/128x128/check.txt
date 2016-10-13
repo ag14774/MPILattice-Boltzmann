@@ -1,0 +1,10 @@
+python check/check.py --ref-av-vels-file=check/128x128.av_vels.dat --ref-final-state-file=check/128x128.final_state.dat --av-vels-file=./av_vels.dat --final-state-file=./final_state.dat
+Total difference in av_vels : 2.281508507712E-10
+Biggest difference (at step 30699) : -1.999962695454E-14
+  1.260485425108E-02 vs. 1.260485425106E-02 = -1.6e-10%
+
+Total difference in final_state : 1.378609684743E-09
+Biggest difference (at coord (1,126)) : 8.999745393368E-14
+  3.323230422276E-02 vs. 3.323230422285E-02 = 2.7e-10%
+
+Both tests passed!
