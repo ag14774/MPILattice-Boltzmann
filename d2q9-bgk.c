@@ -307,11 +307,40 @@ void timestep(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
             tmp_cell->speeds[8] = cells[y_n * params.nx + x_w].speeds[8];
 
             /* compute local density total */
-            double local_density = 0.0;
-
+            double local_density = 0.0;//u_x=0.0,u_y=0.0;
             for (int kk = 0; kk < NSPEEDS; kk++)
             {
                 local_density += tmp_cell->speeds[kk];
+                /*switch(kk){
+                    case 1:
+                        u_x += tmp_cell->speeds[kk];
+                        break;
+                    case 2:
+                        u_y += tmp_cell->speeds[kk];
+                        break;
+                    case 3:
+                        u_x -= tmp_cell->speeds[kk];
+                        break;
+                    case 4:
+                        u_y -= tmp_cell->speeds[kk];
+                        break;
+                    case 5:
+                        u_x += tmp_cell->speeds[kk];
+                        u_y += tmp_cell->speeds[kk];
+                        break;
+                    case 6:
+                        u_x -= tmp_cell->speeds[kk];
+                        u_y += tmp_cell->speeds[kk];
+                        break;
+                    case 7:
+                        u_x -= tmp_cell->speeds[kk];
+                        u_y -= tmp_cell->speeds[kk];
+                        break;
+                    case 8:
+                        u_x += tmp_cell->speeds[kk];
+                        u_y -= tmp_cell->speeds[kk];
+                        break;
+                }*/
             }
 
             /* compute x velocity component. NO DIVISION BY LOCAL DENSITY*/
@@ -338,7 +367,8 @@ void timestep(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
             const double c_sq_ld_2 = twooverthree * local_density;
             /* velocity squared */
             const double u_sq = u_x_sq + u_y_sq;
-            const double ldinvomega = params.omega/local_density;
+            const double ldinv = 1.0/local_density;
+            const double ldinvomega = ldinv*params.omega;
 
             /* equilibrium densities */
             double d_equ[NSPEEDS];
@@ -346,54 +376,30 @@ void timestep(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
             d_equ[0] = w0 * (2*ld_sq-3*u_sq) * ldinvomega;
             /* axis speeds: weight w1 */
             d_equ[1] = w1 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_x 
-                                + u_x_sq - u_sq*c_sq ) 
-                                * ldinvomega;
+                                + u_x_sq - u_sq*c_sq ) * ldinvomega;
             d_equ[2] = w1 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_y 
-                                + u_y_sq - u_sq*c_sq )
-                                * ldinvomega;
+                                + u_y_sq - u_sq*c_sq ) * ldinvomega;
             d_equ[3] = w1 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_x 
-                                + u_x_sq - u_sq*c_sq ) 
-                                * ldinvomega;
+                                + u_x_sq - u_sq*c_sq ) * ldinvomega;
             d_equ[4] = w1 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_y
-                                + u_y_sq - u_sq*c_sq ) 
-                                * ldinvomega;
+                                + u_y_sq - u_sq*c_sq ) * ldinvomega;
             /* diagonal speeds: weight w2 */
             d_equ[5] = w2 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_xy 
-                                + u_xy*u_xy - u_sq*c_sq ) 
-                                * ldinvomega;
+                                + u_xy*u_xy - u_sq*c_sq ) * ldinvomega;
             d_equ[6] = w2 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_xy2 
-                                + u_xy2*u_xy2 - u_sq*c_sq ) 
-                                * ldinvomega;
+                                + u_xy2*u_xy2 - u_sq*c_sq ) * ldinvomega;
             d_equ[7] = w2 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_xy
-                                + u_xy*u_xy - u_sq*c_sq ) 
-                                * ldinvomega;
+                                + u_xy*u_xy - u_sq*c_sq ) * ldinvomega;
             d_equ[8] = w2 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_xy2
-                                + u_xy2*u_xy2 - u_sq*c_sq ) 
-                                * ldinvomega;
+                                + u_xy2*u_xy2 - u_sq*c_sq ) * ldinvomega;
 
             
-
-            local_density = 0.0;
             /* relaxation step */
             for (int kk = 0; kk < NSPEEDS; kk++)
             {
-                tmp_cell->speeds[kk] = tmp_cell->speeds[kk]*oneminusomega + d_equ[kk];
-                local_density += tmp_cell->speeds[kk];
+                tmp_cell->speeds[kk] = tmp_cell->speeds[kk]*oneminusomega + d_equ[kk] ;
+                //local_density += tmp_cell->speeds[kk];
             }
-            const double ldinv = 1.0/local_density;
-            u_x = (tmp_cell->speeds[1]
-                        + tmp_cell->speeds[5]
-                        + tmp_cell->speeds[8]
-                        - tmp_cell->speeds[3]
-                        - tmp_cell->speeds[6]
-                        - tmp_cell->speeds[7]);
-            /* compute y velocity component. NO DIVISION BY LOCAL DENSITY */
-            u_y = (tmp_cell->speeds[2]
-                        + tmp_cell->speeds[5]
-                        + tmp_cell->speeds[6]
-                        - tmp_cell->speeds[4]
-                        - tmp_cell->speeds[7]
-                        - tmp_cell->speeds[8]);
             tot_u += sqrt(u_x*u_x + u_y*u_y) * ldinv;
 
         }
