@@ -197,8 +197,8 @@ int main(int argc, char* argv[])
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles)
 {
   /* compute weighting factors */
-  double w1 = params.density * params.accel / 9.0;
-  double w2 = params.density * params.accel / 36.0;
+  double w1 = params.density * params.accel * 0.111111111111111111111111f;
+  double w2 = params.density * params.accel * 0.277777777777777777777778f;
 
   /* modify the 2nd row of the grid */
   int ii = params.ny - 2;
@@ -212,6 +212,7 @@ int accelerate_flow(const t_param params, t_speed* cells, int* obstacles)
         && (cells[ii * params.nx + jj].speeds[6] - w2) > 0.0
         && (cells[ii * params.nx + jj].speeds[7] - w2) > 0.0)
     {
+
       /* increase 'east-side' densities */
       cells[ii * params.nx + jj].speeds[1] += w1;
       cells[ii * params.nx + jj].speeds[5] += w2;
