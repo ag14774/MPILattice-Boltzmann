@@ -55,6 +55,7 @@
 #include<time.h>
 #include<sys/time.h>
 #include<sys/resource.h>
+#include<omp.h>
 //#include<fenv.h>
 
 #define NSPEEDS         9
@@ -198,7 +199,7 @@ int accelerate_flow(const t_param params, t_speed* cells, int* obstacles)
 {
   /* compute weighting factors */
   double w1 = params.density * params.accel * 0.111111111111111111111111f;
-  double w2 = params.density * params.accel * 0.277777777777777777777778f;
+  double w2 = params.density * params.accel * 0.0277777777777777777777778f;
 
   /* modify the 2nd row of the grid */
   int ii = params.ny - 2;
@@ -226,43 +227,6 @@ int accelerate_flow(const t_param params, t_speed* cells, int* obstacles)
 
   return EXIT_SUCCESS;
 }
-
-/*int propagate(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr)
-{
-  //t_speed* cells = *cells_ptr;
-  //t_speed* tmp_cells = *tmp_cells_ptr;
-  // loop over _all_ cells 
-  for (int ii = 0; ii < params.ny; ii++)
-  {
-    for (int jj = 0; jj < params.nx; jj++)
-    {
-
-      
-    }
-  }
-
-  return EXIT_SUCCESS;
-}
-
-int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles)
-{
-  //loop over the cells in the grid
-  for (int ii = 0; ii < params.ny; ii++)
-  {
-    for (int jj = 0; jj < params.nx; jj++)
-    {
-      if the cell contains an obstacle
-      if (obstacles[ii * params.nx + jj])
-      {
-
-      }
-    }
-  }
-
-  return EXIT_SUCCESS;
-}
-*/
-
 
 //double sqrt13(double n)
 //{
@@ -294,6 +258,7 @@ void timestep(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
   ** NB the collision step is called after
   ** the propagate step and so values of interest
   ** are in the scratch-space grid */
+  #pragma omp parallel for reduction(+:tot_u)
   for (unsigned int ii = 0; ii < params.ny; ii++)
   {
     int y_n = ii+1;

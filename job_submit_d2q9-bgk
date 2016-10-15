@@ -14,7 +14,7 @@
 application="./d2q9-bgk"
 
 #! Run options for the application
-options="input_256x256.params obstacles_256x256.dat"
+options="input_128x128.params obstacles_128x128.dat"
 
 #!export TAU_METRICS=TIME,PAPI_FP_INS,PAPI_L1_DCM
 #!export TAU_SAMPLING=1
