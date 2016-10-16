@@ -106,14 +106,14 @@ void preprocess_obstacles(int* obstacles,const t_param params);
 ** timestep calls, in order, the functions:
 ** accelerate_flow(), propagate(), rebound() & collision()
 */
-int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1);
+int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1, int tid);
 //int propagate(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr);
 //int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 //int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 double timestep(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
-              t_speed* tmp_cells1, int* obstacles0, int* obstacles1);
+              t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int tid);
 double timestep_row(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
-              t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int ii);
+              t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int ii, int tid);
 
 
 int write_values(const t_param params, t_speed* cells0, t_speed* cells1, int* obstacles0, int* obstacles1, double* av_vels);
@@ -177,53 +177,38 @@ int main(int argc, char* argv[])
   gettimeofday(&timstr, NULL);
   tic = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
 
-  double total = 0.0;
-#pragma omp parallel shared(total)
+#pragma omp parallel firstprivate(tmp_cells0,cells0, tmp_cells1, cells1)
 {
-  for (unsigned int tt = 0; tt < params.maxIters; tt++)
+  int tid = omp_get_thread_num();
+  for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
-    accelerate_flow(params, cells1, obstacles1);
     #pragma omp barrier
-    double local = timestep(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1);
-    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,0);
-    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf-1);
-    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf);
-    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.ny-1);
+    accelerate_flow(params, cells1, obstacles1,tid);
+    #pragma omp barrier
+    double local = timestep(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,tid);
+    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,0,tid);
+    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf-1,tid);
+    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf,tid);
+    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.ny-1,tid);
     
     #pragma omp atomic
-    total += local;
-    #pragma omp barrier
-    #pragma omp sections
-    {
+    av_vels[tt] += local * params.free_cells_inv;
 
-    #pragma omp section
-    {
-    av_vels[tt] = total * params.free_cells_inv;
-    total = 0.0;
-    }
-
-    #pragma omp section
-    {
-    t_speed* temp0 = cells0;
+    t_speed* tmp = cells0;
     cells0 = tmp_cells0;
-    tmp_cells0 = temp0;
-    }
+    tmp_cells0 = tmp;
 
-    #pragma omp section
-    {
-    t_speed* temp1 = cells1;
+    tmp = cells1;
     cells1 = tmp_cells1;
-    tmp_cells1 = temp1;
-    }
+    tmp_cells1= tmp;
 
-    }
 #ifdef DEBUG
-#pragma omp single
-    {
+//#pragma omp single
+//    {
     printf("==timestep: %d==\n", tt);
     printf("av velocity: %.12E\n", av_vels[tt]);
     printf("tot density: %.12E\n", total_density(params, cells0, cells1));
-    }
+//    }
 #endif
   }
 }
@@ -247,7 +232,7 @@ int main(int argc, char* argv[])
   return EXIT_SUCCESS;
 }
 
-int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1)
+int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1,int tid)
 {
   /* compute weighting factors */
   double w1 = params.density * params.accel * 0.111111111111111111111111f;
@@ -255,9 +240,10 @@ int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1)
 
   /* modify the 2nd row of the grid */
   int ii = params.nyhalf - 2;
-  int tid = omp_get_thread_num();
+  //int tid = omp_get_thread_num();
   int start = tid * (params.nx/NUMTHREADS);
   int end   = (tid+1) * (params.nx/NUMTHREADS);
+  //#pragma omp for
   for (unsigned int jj = start; jj < end; jj++)
   {
     /* if the cell is not occupied and
@@ -296,8 +282,8 @@ int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1)
 
 
 
-double timestep_row(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
-              t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int ii)
+inline double timestep_row(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
+              t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int ii, int tid)
 {
   static const double c_sq = 1.0 / 3.0; /* square of speed of sound */
   static const double twooverthree = 2.0/3.0;
@@ -307,19 +293,24 @@ double timestep_row(const t_param params, t_speed* cells0, t_speed* cells1, t_sp
   static const double w2 = 1.0 / 36.0 * 4.5; /* weighting factor */
   register double oneminusomega = 1.0 - params.omega;
   double tot_u = 0.0;
+  //int rows[4] = {0, params.nyhalf-1, params.nyhalf, params.ny-1};
 
   /* loop over the cells in the grid
   ** NB the collision step is called after
   ** the propagate step and so values of interest
   ** are in the scratch-space grid */
 
+  //int tid = omp_get_thread_num(); //4 threads for each of the 4 remaining special rows
+  //for(int qq=0;qq<4;qq++){
+  //int ii = rows[qq];
   int y_n = ii+1;
   if(y_n == params.ny) y_n = 0;
   int y_s = (ii == 0) ? (params.ny - 1) : (ii - 1);
   
-  int tid = omp_get_thread_num();
   int start = tid * (params.nx/NUMTHREADS);
   int end   = (tid+1) * (params.nx/NUMTHREADS);
+  //printf("tid:%d, ii:%d, start:%d, end:%d\n",tid,ii,start,end);
+
   for(unsigned int jj = start; jj < end; jj++){
     /* determine indices of axis-direction neighbours
     ** respecting periodic boundary conditions (wrap around) */
@@ -422,12 +413,12 @@ double timestep_row(const t_param params, t_speed* cells0, t_speed* cells1, t_sp
         tmp_cell->speeds[6] = getcellspeed(y_n,x_w,8,cells0,cells1,params.nyhalf,params.nx);
     }
   }
-
+  //}
   return tot_u;
 }
 
-double timestep(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
-              t_speed* tmp_cells1, int* obstacles0, int* obstacles1)
+inline double timestep(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
+              t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int tid)
 {
   static const double c_sq = 1.0 / 3.0; /* square of speed of sound */
   static const double twooverthree = 2.0/3.0;
@@ -443,9 +434,10 @@ double timestep(const t_param params, t_speed* cells0, t_speed* cells1, t_speed*
   ** the propagate step and so values of interest
   ** are in the scratch-space grid */
   
-  int tid = omp_get_thread_num();
+  //int tid = omp_get_thread_num();
   int start = tid * (params.ny/NUMTHREADS);
   int end   = (tid+1) * (params.ny/NUMTHREADS);
+  //#pragma omp for nowait
   for (unsigned int ii = start; ii < end; ii++)
   {
     if (ii==0 || ii==(params.nyhalf-1) || ii==params.nyhalf || ii==(params.ny-1) ) continue; //special cases. handle them elsewhere
