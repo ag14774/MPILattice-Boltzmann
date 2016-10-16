@@ -28,4 +28,4 @@ profile:
 	tau_cc.sh -g $(CFLAGS) $(EXE).c $(LIBS) -o $(EXE)
 
 debug: 
-	$(CC) $(CFLAGS) -DDEBUG $(EXE).c $(LIBS) -o $(EXE)
+	$(CC) $(CFLAGS) -g -DDEBUG $(EXE).c $(LIBS) -o $(EXE)

@@ -1,5 +1,5 @@
 #!/bin/bash
 
 options="input_"$1"x"$2".params obstacles_"$1"x"$2".dat"
-
+export OMP_PROC_BIND=TRUE
 ./d2q9-bgk $options
