@@ -64,6 +64,16 @@
 #define BLOCKSIZE       16
 #define NUMTHREADS      16
 
+//Vectorising inner loop
+#define VECSIZE 4
+#define addvec _mm256_add_pd
+#define subvec _mm256_sub_pd
+#define mulvec _mm256_mul_pd
+#define divvec _mm256_div_pd
+#define strvec _mm256_store_pd
+#define setvec _mm256_set1_pd
+#define loadvec _mm256_load_pd
+
 //nyhalf = ny/2
 #define getcelladdr(ii,jj,arr1,arr2,nyhalf,nx) ((ii<nyhalf) ? (&(arr1[ii*nx+jj])) : (&(arr2[(ii-nyhalf)*nx+jj])))
 #define getcellval(ii,jj,arr1,arr2,nyhalf,nx) ((ii<nyhalf) ? (arr1[ii*nx+jj]) : (arr2[(ii-nyhalf)*nx+jj]))
@@ -110,8 +120,8 @@ int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1, int 
 //int propagate(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr);
 //int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 //int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
-double timestep(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
-              t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int tid);
+double timestep(const t_param params, t_speed* restrict cells0, t_speed* restrict cells1, t_speed* restrict tmp_cells0,
+              t_speed* restrict tmp_cells1, int* restrict obstacles0, int* restrict obstacles1, int tid);
 double timestep_row(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
               t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int ii, int tid);
 
@@ -159,6 +169,7 @@ int main(int argc, char* argv[])
   double systim;                /* floating point number to record elapsed system CPU time */
  
 
+  //omp_set_num_threads(1);
   //feenableexcept(FE_INVALID | FE_OVERFLOW);
   /* parse the command line */
   if (argc != 3)
@@ -295,7 +306,7 @@ inline double timestep_row(const t_param params, t_speed* cells0, t_speed* cells
   static const double w0 = 4.0 / 81.0 * 4.5;  /* weighting factor */
   static const double w1 = 1.0 / 9.0 * 4.5 ;  /* weighting factor */
   static const double w2 = 1.0 / 36.0 * 4.5; /* weighting factor */
-  register double oneminusomega = 1.0 - params.omega;
+  double oneminusomega = 1.0 - params.omega;
   double tot_u = 0.0;
   //int rows[4] = {0, params.nyhalf-1, params.nyhalf, params.ny-1};
 
@@ -402,6 +413,10 @@ inline double timestep_row(const t_param params, t_speed* cells0, t_speed* cells
             tmp_cell->speeds[kk] += d_equ[kk];
             //local_density += tmp_cell->speeds[kk];
         }
+        //int dim=NSPEEDS;
+        //int l=1;       
+        //DAXPY(&dim, &oneminusomega, tmp_cell->speeds,&l,d_equ,&l);
+        //DSWAP(&dim,d_equ,&l,tmp_cell->speeds,&l);
         //printf("\n");
         tot_u += sqrt(u_x*u_x + u_y*u_y) * ldinv;
     }
@@ -421,16 +436,15 @@ inline double timestep_row(const t_param params, t_speed* cells0, t_speed* cells
   return tot_u;
 }
 
-inline double timestep(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
-              t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int tid)
+inline double timestep(const t_param params, t_speed* restrict cells0, t_speed* restrict cells1, t_speed* restrict tmp_cells0,
+              t_speed* restrict tmp_cells1, int* restrict obstacles0, int* restrict obstacles1, int tid)
 {
-  static const double c_sq = 1.0 / 3.0; /* square of speed of sound */
-  static const double twooverthree = 2.0/3.0;
-  static const double two_c_sq_sq = 2.0 / 9.0;
-  static const double w0 = 4.0 / 81.0 * 4.5;  /* weighting factor */
-  static const double w1 = 1.0 / 9.0 * 4.5 ;  /* weighting factor */
-  static const double w2 = 1.0 / 36.0 * 4.5; /* weighting factor */
-  register double oneminusomega = 1.0 - params.omega;
+  //static const double c_sq = 1.0 / 3.0; /* square of speed of sound */
+  static const double ic_sq = 3.0;
+  //static const double ic_sq_sq = 9.0;
+  static const double w0 = 4.0 / 9.0;  /* weighting factor */
+  static const double w1 = 1.0 / 9.0;  /* weighting factor */
+  static const double w2 = 1.0 / 36.0; /* weighting factor */
   double tot_u = 0.0;
 
   /* loop over the cells in the grid
@@ -445,9 +459,9 @@ inline double timestep(const t_param params, t_speed* cells0, t_speed* cells1, t
   for (unsigned int ii = start; ii < end; ii++)
   {
     if (ii==0 || ii==(params.nyhalf-1) || ii==params.nyhalf || ii==(params.ny-1) ) continue; //special cases. handle them elsewhere
-    t_speed* cells = NULL;
-    t_speed* tmp_cells = NULL;
-    int* obstacles = NULL;
+    t_speed* restrict cells = NULL;
+    t_speed* restrict tmp_cells = NULL;
+    int* restrict obstacles = NULL;
     int qq = 0;
     if(ii<params.nyhalf){
         cells = cells0;
@@ -463,103 +477,194 @@ inline double timestep(const t_param params, t_speed* cells0, t_speed* cells1, t
     }
     int y_n = qq + 1;
     int y_s = qq - 1;
-    for(unsigned int jj = 0; jj < params.nx; jj++){
+    for(unsigned int jj = 0; jj < params.nx; jj+=VECSIZE){
         /* determine indices of axis-direction neighbours
         ** respecting periodic boundary conditions (wrap around) */
-        int x_e = jj + 1;
-        if (x_e == params.nx) x_e = 0;
-        int x_w = (jj == 0) ? (params.nx - 1) : (jj - 1);
-        /* propagate densities to neighbouring cells, following
-        ** appropriate directions of travel and writing into
-        ** scratch space grid */
-        t_speed *const tmp_cell = &tmp_cells[qq*params.nx + jj];
-        //Reverse the operation such that after each iteration the current cell is fully updated
-        //and hence the loop can be merged with the next step
-        if(!obstacles[qq*params.nx+jj]){
-            double local_density = tmp_cell->speeds[0] = cells[qq * params.nx + jj].speeds[0]; 
-            local_density += tmp_cell->speeds[1] = cells[qq * params.nx + x_w].speeds[1];
-            local_density += tmp_cell->speeds[2] = cells[y_s * params.nx + jj].speeds[2];
-            local_density += tmp_cell->speeds[3] = cells[qq * params.nx + x_e].speeds[3];
-            local_density += tmp_cell->speeds[4] = cells[y_n * params.nx + jj].speeds[4];
-            local_density += tmp_cell->speeds[5] = cells[y_s * params.nx + x_w].speeds[5];
-            local_density += tmp_cell->speeds[6] = cells[y_s * params.nx + x_e].speeds[6];
-            local_density += tmp_cell->speeds[7] = cells[y_n * params.nx + x_e].speeds[7];
-            local_density += tmp_cell->speeds[8] = cells[y_n * params.nx + x_w].speeds[8];
-            //double local_density = 0.0;
-            /* compute local density total */
-            //for (unsigned int kk = 0; kk < NSPEEDS; kk++)
-            //{
-            //    local_density += tmp_cell->speeds[kk];
-            //}
-            /* compute x velocity component. NO DIVISION BY LOCAL DENSITY*/
-            double u_x = tmp_cell->speeds[1]
-                        + tmp_cell->speeds[5]
-                        + tmp_cell->speeds[8]
-                        - tmp_cell->speeds[3]
-                        - tmp_cell->speeds[6]
-                        - tmp_cell->speeds[7];
-            /* compute y velocity component. NO DIVISION BY LOCAL DENSITY */
-            double u_y = tmp_cell->speeds[2]
-                        + tmp_cell->speeds[5]
-                        + tmp_cell->speeds[6]
-                        - tmp_cell->speeds[4]
-                        - tmp_cell->speeds[7]
-                        - tmp_cell->speeds[8];
-
-//EQUATIONS ARE VERY DIFFERENT BUT STILL DO THE SAME THING.
-            const double u_x_sq = u_x * u_x;
-            const double u_y_sq = u_y * u_y;
-            const double u_xy   = u_x + u_y;
-            const double u_xy2  = u_x - u_y;
-            const double ld_sq  = local_density * local_density;
-            const double c_sq_ld_2 = twooverthree * local_density;
-            /* velocity squared */
-            const double u_sq = u_x_sq + u_y_sq;
-            const double ldinv = 1.0/local_density;
-            const double ldinvomega = ldinv*params.omega;
-            /* equilibrium densities */
-            double d_equ[NSPEEDS];
-            /* zero velocity density: weight w0 */
-            d_equ[0] = w0 * (2*ld_sq-3*u_sq) * ldinvomega;
-            /* axis speeds: weight w1 */
-            d_equ[1] = w1 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_x 
-                                + u_x_sq - u_sq*c_sq ) * ldinvomega;
-            d_equ[2] = w1 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_y 
-                                + u_y_sq - u_sq*c_sq ) * ldinvomega;
-            d_equ[3] = w1 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_x 
-                                + u_x_sq - u_sq*c_sq ) * ldinvomega;
-            d_equ[4] = w1 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_y
-                                + u_y_sq - u_sq*c_sq ) * ldinvomega;
-            /* diagonal speeds: weight w2 */
-            d_equ[5] = w2 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_xy 
-                                + u_xy*u_xy - u_sq*c_sq ) * ldinvomega;
-            d_equ[6] = w2 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_xy2 
-                                + u_xy2*u_xy2 - u_sq*c_sq ) * ldinvomega;
-            d_equ[7] = w2 * ( two_c_sq_sq*ld_sq - c_sq_ld_2*u_xy
-                                + u_xy*u_xy - u_sq*c_sq ) * ldinvomega;
-            d_equ[8] = w2 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_xy2
-                                + u_xy2*u_xy2 - u_sq*c_sq ) * ldinvomega;
-
+        double tmp[VECSIZE*NSPEEDS] __attribute__((aligned(32)));
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++){
+            int x = jj+k;
+            int x_e = x + 1;
+            if(x_e >= params.nx) x_e -= params.nx;
+            int x_w = (x == 0) ? (params.nx - 1) : (x-1);
+            tmp[VECSIZE*0+k] = cells[qq * params.nx + x].speeds[0];
+            tmp[VECSIZE*1+k] = cells[qq * params.nx + x_w].speeds[1];
+            tmp[VECSIZE*2+k] = cells[y_s * params.nx + x].speeds[2];
+            tmp[VECSIZE*3+k] = cells[qq * params.nx + x_e].speeds[3];
+            tmp[VECSIZE*4+k] = cells[y_n * params.nx + x].speeds[4];
+            tmp[VECSIZE*5+k] = cells[y_s * params.nx + x_w].speeds[5];
+            tmp[VECSIZE*6+k] = cells[y_s * params.nx + x_e].speeds[6];
+            tmp[VECSIZE*7+k] = cells[y_n * params.nx + x_e].speeds[7];
+            tmp[VECSIZE*8+k] = cells[y_n * params.nx + x_w].speeds[8];
             
-            /* relaxation step */
-            for (unsigned int kk = 0; kk < NSPEEDS; kk++)
-            {
-                tmp_cell->speeds[kk] = tmp_cell->speeds[kk]*oneminusomega;
-                tmp_cell->speeds[kk] += d_equ[kk];
-                //local_density += tmp_cell->speeds[kk];
+        }
+
+        double densvec[VECSIZE] __attribute__((aligned(32)));
+
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++){
+            densvec[k] = tmp[VECSIZE*0+k];
+            densvec[k] += tmp[VECSIZE*1+k];
+            densvec[k] += tmp[VECSIZE*2+k];
+            densvec[k] += tmp[VECSIZE*3+k];
+            densvec[k] += tmp[VECSIZE*4+k];
+            densvec[k] += tmp[VECSIZE*5+k];
+            densvec[k] += tmp[VECSIZE*6+k];
+            densvec[k] += tmp[VECSIZE*7+k];
+            densvec[k] += tmp[VECSIZE*8+k];
+        }
+
+        double densinv[VECSIZE] __attribute__((aligned(32)));
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++)
+        {
+            densinv[k] = 1.0/densvec[k];
+        }
+
+        double u_x[VECSIZE] __attribute__((aligned(32)));
+        double u_y[VECSIZE] __attribute__((aligned(32)));
+
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++)
+        {
+            u_x[k] = tmp[VECSIZE*1+k] + tmp[VECSIZE*5+k];
+            u_x[k] += tmp[VECSIZE*8+k];
+            u_x[k] -= tmp[VECSIZE*3+k];
+            u_x[k] -= tmp[VECSIZE*6+k];
+            u_x[k] -= tmp[VECSIZE*7+k];
+            //u_x[k] *= densinv[k];
+            u_y[k] = tmp[VECSIZE*2+k] + tmp[VECSIZE*5+k];
+            u_y[k] += tmp[VECSIZE*6+k];
+            u_y[k] -= tmp[VECSIZE*4+k];
+            u_y[k] -= tmp[VECSIZE*7+k];
+            u_y[k] -= tmp[VECSIZE*8+k];
+            //u_y[k] *= densinv[k];
+        }
+
+        double u_sq[VECSIZE] __attribute__((aligned(32)));
+
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++)
+        {
+            u_sq[k] = u_x[k]*u_x[k] + u_y[k]*u_y[k];
+        }
+
+        double uvec[NSPEEDS*VECSIZE] __attribute__((aligned(32)));
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++)
+        {
+            uvec[VECSIZE*1+k] =   u_x[k];
+            uvec[VECSIZE*2+k] =            u_y[k];
+            uvec[VECSIZE*3+k] = - u_x[k];
+            uvec[VECSIZE*4+k] =          - u_y[k];
+            uvec[VECSIZE*5+k] =   u_x[k] + u_y[k];
+            uvec[VECSIZE*6+k] = - u_x[k] + u_y[k];
+            uvec[VECSIZE*7+k] = - u_x[k] - u_y[k];
+            uvec[VECSIZE*8+k] =   u_x[k] - u_y[k];
+        }
+
+        double ic_sqtimesu[NSPEEDS*VECSIZE] __attribute__((aligned(32)));
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++)
+        {
+            ic_sqtimesu[VECSIZE*1+k] = uvec[VECSIZE*1+k]*ic_sq;
+            ic_sqtimesu[VECSIZE*2+k] = uvec[VECSIZE*2+k]*ic_sq;
+            ic_sqtimesu[VECSIZE*3+k] = uvec[VECSIZE*3+k]*ic_sq;
+            ic_sqtimesu[VECSIZE*4+k] = uvec[VECSIZE*4+k]*ic_sq;
+            ic_sqtimesu[VECSIZE*5+k] = uvec[VECSIZE*5+k]*ic_sq;
+            ic_sqtimesu[VECSIZE*6+k] = uvec[VECSIZE*6+k]*ic_sq;
+            ic_sqtimesu[VECSIZE*7+k] = uvec[VECSIZE*7+k]*ic_sq;
+            ic_sqtimesu[VECSIZE*8+k] = uvec[VECSIZE*8+k]*ic_sq;
+        }
+
+        double ic_sqtimesu_sq[NSPEEDS*VECSIZE] __attribute__((aligned(32)));
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++)
+        {
+            ic_sqtimesu_sq[VECSIZE*1+k] = ic_sqtimesu[VECSIZE*1+k] * uvec[VECSIZE*1+k];
+            ic_sqtimesu_sq[VECSIZE*2+k] = ic_sqtimesu[VECSIZE*2+k] * uvec[VECSIZE*2+k];
+            ic_sqtimesu_sq[VECSIZE*3+k] = ic_sqtimesu[VECSIZE*3+k] * uvec[VECSIZE*3+k];
+            ic_sqtimesu_sq[VECSIZE*4+k] = ic_sqtimesu[VECSIZE*4+k] * uvec[VECSIZE*4+k];
+            ic_sqtimesu_sq[VECSIZE*5+k] = ic_sqtimesu[VECSIZE*5+k] * uvec[VECSIZE*5+k];
+            ic_sqtimesu_sq[VECSIZE*6+k] = ic_sqtimesu[VECSIZE*6+k] * uvec[VECSIZE*6+k];
+            ic_sqtimesu_sq[VECSIZE*7+k] = ic_sqtimesu[VECSIZE*7+k] * uvec[VECSIZE*7+k];
+            ic_sqtimesu_sq[VECSIZE*8+k] = ic_sqtimesu[VECSIZE*8+k] * uvec[VECSIZE*8+k];
+        }
+
+        double d_equ[NSPEEDS*VECSIZE] __attribute__((aligned(32)));
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++)
+        {
+            d_equ[VECSIZE*0+k] = w0 * (densvec[k] - 0.5*densinv[k]*ic_sq*u_sq[k]);
+            d_equ[VECSIZE*1+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*1+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*1+k]-u_sq[k]) );
+            d_equ[VECSIZE*2+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*2+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*2+k]-u_sq[k]) );
+            d_equ[VECSIZE*3+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*3+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*3+k]-u_sq[k]) );
+            d_equ[VECSIZE*4+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*4+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*4+k]-u_sq[k]) );
+            d_equ[VECSIZE*5+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*5+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*5+k]-u_sq[k]) );
+            d_equ[VECSIZE*6+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*6+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*6+k]-u_sq[k]) );
+            d_equ[VECSIZE*7+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*7+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*7+k]-u_sq[k]) );
+            d_equ[VECSIZE*8+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*8+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*8+k]-u_sq[k]) );
+        }
+
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++)
+        {
+            tot_u += sqrt(u_sq[k]) * densinv[k];
+        }
+
+       
+        int noobst=1;
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++){
+            if(obstacles[qq * params.nx + jj + k]){
+                noobst=0;
+                break;
             }
-            tot_u += sqrt(u_x*u_x + u_y*u_y) * ldinv;
+        }
+
+        if(noobst){
+            #pragma vector aligned
+            for(int k=0;k<VECSIZE;k++){
+                tmp_cells[qq * params.nx + jj + k].speeds[0] = tmp[VECSIZE*0+k] + params.omega*(d_equ[VECSIZE*0+k] - tmp[VECSIZE*0+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[1] = tmp[VECSIZE*1+k] + params.omega*(d_equ[VECSIZE*1+k] - tmp[VECSIZE*1+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[2] = tmp[VECSIZE*2+k] + params.omega*(d_equ[VECSIZE*2+k] - tmp[VECSIZE*2+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[3] = tmp[VECSIZE*3+k] + params.omega*(d_equ[VECSIZE*3+k] - tmp[VECSIZE*3+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[4] = tmp[VECSIZE*4+k] + params.omega*(d_equ[VECSIZE*4+k] - tmp[VECSIZE*4+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[5] = tmp[VECSIZE*5+k] + params.omega*(d_equ[VECSIZE*5+k] - tmp[VECSIZE*5+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[6] = tmp[VECSIZE*6+k] + params.omega*(d_equ[VECSIZE*6+k] - tmp[VECSIZE*6+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[7] = tmp[VECSIZE*7+k] + params.omega*(d_equ[VECSIZE*7+k] - tmp[VECSIZE*7+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[8] = tmp[VECSIZE*8+k] + params.omega*(d_equ[VECSIZE*8+k] - tmp[VECSIZE*8+k]);
+            }
         }
         else{
-            tmp_cell->speeds[0] = cells[qq * params.nx + jj].speeds[0]; 
-            tmp_cell->speeds[3] = cells[qq * params.nx + x_w].speeds[1];
-            tmp_cell->speeds[4] = cells[y_s * params.nx + jj].speeds[2];
-            tmp_cell->speeds[1] = cells[qq * params.nx + x_e].speeds[3];
-            tmp_cell->speeds[2] = cells[y_n * params.nx + jj].speeds[4];
-            tmp_cell->speeds[7] = cells[y_s * params.nx + x_w].speeds[5];
-            tmp_cell->speeds[8] = cells[y_s * params.nx + x_e].speeds[6];
-            tmp_cell->speeds[5] = cells[y_n * params.nx + x_e].speeds[7];
-            tmp_cell->speeds[6] = cells[y_n * params.nx + x_w].speeds[8];
+
+        #pragma vector aligned
+        for(int k=0;k<VECSIZE;k++){
+            if(!obstacles[qq * params.nx +jj +k]){
+                tmp_cells[qq * params.nx + jj + k].speeds[0] = tmp[VECSIZE*0+k] + params.omega*(d_equ[VECSIZE*0+k] - tmp[VECSIZE*0+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[1] = tmp[VECSIZE*1+k] + params.omega*(d_equ[VECSIZE*1+k] - tmp[VECSIZE*1+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[2] = tmp[VECSIZE*2+k] + params.omega*(d_equ[VECSIZE*2+k] - tmp[VECSIZE*2+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[3] = tmp[VECSIZE*3+k] + params.omega*(d_equ[VECSIZE*3+k] - tmp[VECSIZE*3+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[4] = tmp[VECSIZE*4+k] + params.omega*(d_equ[VECSIZE*4+k] - tmp[VECSIZE*4+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[5] = tmp[VECSIZE*5+k] + params.omega*(d_equ[VECSIZE*5+k] - tmp[VECSIZE*5+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[6] = tmp[VECSIZE*6+k] + params.omega*(d_equ[VECSIZE*6+k] - tmp[VECSIZE*6+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[7] = tmp[VECSIZE*7+k] + params.omega*(d_equ[VECSIZE*7+k] - tmp[VECSIZE*7+k]);
+                tmp_cells[qq * params.nx + jj + k].speeds[8] = tmp[VECSIZE*8+k] + params.omega*(d_equ[VECSIZE*8+k] - tmp[VECSIZE*8+k]);
+            
+            }
+            else{
+                tmp_cells[qq * params.nx + jj + k].speeds[0] = tmp[VECSIZE*0+k];
+                tmp_cells[qq * params.nx + jj + k].speeds[3] = tmp[VECSIZE*1+k];
+                tmp_cells[qq * params.nx + jj + k].speeds[4] = tmp[VECSIZE*2+k];
+                tmp_cells[qq * params.nx + jj + k].speeds[1] = tmp[VECSIZE*3+k];
+                tmp_cells[qq * params.nx + jj + k].speeds[2] = tmp[VECSIZE*4+k];
+                tmp_cells[qq * params.nx + jj + k].speeds[7] = tmp[VECSIZE*5+k];
+                tmp_cells[qq * params.nx + jj + k].speeds[8] = tmp[VECSIZE*6+k];
+                tmp_cells[qq * params.nx + jj + k].speeds[5] = tmp[VECSIZE*7+k];
+                tmp_cells[qq * params.nx + jj + k].speeds[6] = tmp[VECSIZE*8+k];
+                
+            }
+        }
         }
     }
   }
@@ -813,7 +918,7 @@ int finalise(const t_param* params, t_speed** cells_ptr0, t_speed** cells_ptr1, 
   /*
   ** free up allocated memory
   */
-  free(*cells_ptr0);
+  free(*cells_ptr0);  
   *cells_ptr0 = NULL;
 
   free(*cells_ptr1);
