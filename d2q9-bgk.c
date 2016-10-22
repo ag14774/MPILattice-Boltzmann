@@ -613,16 +613,13 @@ inline double timestep(const t_param params, t_speed* restrict cells0, t_speed* 
         }
 
        
-        int noobst=1;
+        int obst=0;
         #pragma vector aligned
         for(int k=0;k<VECSIZE;k++){
-            if(obstacles[qq * params.nx + jj + k]){
-                noobst=0;
-                break;
-            }
+            obst+=obstacles[qq*params.nx+jj+k];
         }
 
-        if(noobst){
+        if(!obst){
             #pragma vector aligned
             for(int k=0;k<VECSIZE;k++){
                 tmp_cells[qq * params.nx + jj + k].speeds[0] = tmp[VECSIZE*0+k] + params.omega*(d_equ[VECSIZE*0+k] - tmp[VECSIZE*0+k]);
