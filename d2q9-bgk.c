@@ -193,10 +193,10 @@ int main(int argc, char* argv[])
     }
     #pragma omp barrier
     double local = timestep(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,tid);
-    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,0,tid);
-    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf-1,tid);
-    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf,tid);
-    local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.ny-1,tid);
+    //local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,0,tid);
+    //local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf-1,tid);
+    //local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf,tid);
+    //local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.ny-1,tid);
 
     #pragma omp atomic
     av_vels[tt] += local * params.free_cells_inv;
@@ -762,24 +762,43 @@ inline double timestep(const t_param params, t_speed* restrict cells0, t_speed* 
         /* determine indices of axis-direction neighbours
         ** respecting periodic boundary conditions (wrap around) */
         double tmp[VECSIZE*NSPEEDS] __attribute__((aligned(32)));
-        #pragma vector aligned
-        for(int k=0;k<VECSIZE;k++){
-            int x = jj+k;
-            int x_e = x + 1;
-            if(x_e >= params.nx) x_e -= params.nx;
-            int x_w = (x == 0) ? (params.nx - 1) : (x-1);
-            tmp[VECSIZE*0+k] = cells[qq * params.nx + x].speeds[0];
-            tmp[VECSIZE*1+k] = cells[qq * params.nx + x_w].speeds[1];
-            tmp[VECSIZE*2+k] = cells[y_s * params.nx + x].speeds[2];
-            tmp[VECSIZE*3+k] = cells[qq * params.nx + x_e].speeds[3];
-            tmp[VECSIZE*4+k] = cells[y_n * params.nx + x].speeds[4];
-            tmp[VECSIZE*5+k] = cells[y_s * params.nx + x_w].speeds[5];
-            tmp[VECSIZE*6+k] = cells[y_s * params.nx + x_e].speeds[6];
-            tmp[VECSIZE*7+k] = cells[y_n * params.nx + x_e].speeds[7];
-            tmp[VECSIZE*8+k] = cells[y_n * params.nx + x_w].speeds[8];
-
+        if (ii==0 || ii==(params.nyhalf-1) || ii==params.nyhalf || ii==(params.ny-1) ){
+          #pragma vector aligned
+          for(int k=0;k<VECSIZE;k++){
+              int x = jj+k;
+              int x_e = x + 1;
+              if(x_e >= params.nx) x_e -= params.nx;
+              int x_w = x-1;
+              if(x==0) x_w = params.nx-1;
+              tmp[VECSIZE*0+k] = getcellspeed(ii,x,0,cells0,cells1,params.nyhalf,params.nx);
+              tmp[VECSIZE*1+k] = getcellspeed(ii,x_w,1,cells0,cells1,params.nyhalf,params.nx);
+              tmp[VECSIZE*2+k] = getcellspeed(y_s,x,2,cells0,cells1,params.nyhalf,params.nx);
+              tmp[VECSIZE*3+k] = getcellspeed(ii,x_e,3,cells0,cells1,params.nyhalf,params.nx);
+              tmp[VECSIZE*4+k] = getcellspeed(y_n,x,4,cells0,cells1,params.nyhalf,params.nx);
+              tmp[VECSIZE*5+k] = getcellspeed(y_s,x_w,5,cells0,cells1,params.nyhalf,params.nx);
+              tmp[VECSIZE*6+k] = getcellspeed(y_s,x_e,6,cells0,cells1,params.nyhalf,params.nx);
+              tmp[VECSIZE*7+k] = getcellspeed(y_n,x_e,7,cells0,cells1,params.nyhalf,params.nx);
+              tmp[VECSIZE*8+k] = getcellspeed(y_n,x_w,8,cells0,cells1,params.nyhalf,params.nx);
+          }
         }
-
+        else{
+          #pragma vector aligned
+          for(int k=0;k<VECSIZE;k++){
+              int x = jj+k;
+              int x_e = x + 1;
+              if(x_e >= params.nx) x_e -= params.nx;
+              int x_w = (x == 0) ? (params.nx - 1) : (x-1);
+              tmp[VECSIZE*0+k] = cells[qq * params.nx + x].speeds[0];
+              tmp[VECSIZE*1+k] = cells[qq * params.nx + x_w].speeds[1];
+              tmp[VECSIZE*2+k] = cells[y_s * params.nx + x].speeds[2];
+              tmp[VECSIZE*3+k] = cells[qq * params.nx + x_e].speeds[3];
+              tmp[VECSIZE*4+k] = cells[y_n * params.nx + x].speeds[4];
+              tmp[VECSIZE*5+k] = cells[y_s * params.nx + x_w].speeds[5];
+              tmp[VECSIZE*6+k] = cells[y_s * params.nx + x_e].speeds[6];
+              tmp[VECSIZE*7+k] = cells[y_n * params.nx + x_e].speeds[7];
+              tmp[VECSIZE*8+k] = cells[y_n * params.nx + x_w].speeds[8];
+          }
+        }
         double densvec[VECSIZE] __attribute__((aligned(32)));
 
         #pragma vector aligned
