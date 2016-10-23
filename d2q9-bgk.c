@@ -61,18 +61,11 @@
 #define NSPEEDS         9
 #define FINALSTATEFILE  "final_state.dat"
 #define AVVELSFILE      "av_vels.dat"
-#define BLOCKSIZE       16
+#define BLOCKSIZE       16  //Not used
 #define NUMTHREADS      16
 
-//Vectorising inner loop
+//Vector size
 #define VECSIZE 4
-#define addvec _mm256_add_pd
-#define subvec _mm256_sub_pd
-#define mulvec _mm256_mul_pd
-#define divvec _mm256_div_pd
-#define strvec _mm256_store_pd
-#define setvec _mm256_set1_pd
-#define loadvec _mm256_load_pd
 
 //nyhalf = ny/2
 #define getcelladdr(ii,jj,arr1,arr2,nyhalf,nx) ((ii<nyhalf) ? (&(arr1[ii*nx+jj])) : (&(arr2[(ii-nyhalf)*nx+jj])))
@@ -81,7 +74,7 @@
 
 
 /* struct to hold the parameter values */
-typedef struct
+struct __declspec(align(32)) t_param
 {
   double density;       /* density per link */
   double accel;         /* density redistribution */
@@ -93,7 +86,9 @@ typedef struct
   int    maxIters;      /* no. of iterations */
   int    reynolds_dim;  /* dimension for Reynolds number */
 
-} t_param;
+};
+
+typedef struct t_param t_param;
 
 /* struct to hold the 'speed' values */
 typedef struct
@@ -116,7 +111,7 @@ void preprocess_obstacles(int* obstacles,const t_param params);
 ** timestep calls, in order, the functions:
 ** accelerate_flow(), propagate(), rebound() & collision()
 */
-int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1, int tid);
+int accelerate_flow(const t_param params, t_speed* restrict cells1, int* restrict obstacles1);
 //int propagate(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr);
 //int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 //int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
@@ -167,7 +162,6 @@ int main(int argc, char* argv[])
   double tic, toc;              /* floating point numbers to calculate elapsed wallclock time */
   double usrtim;                /* floating point number to record elapsed user CPU time */
   double systim;                /* floating point number to record elapsed system CPU time */
- 
 
   //omp_set_num_threads(1);
   //feenableexcept(FE_INVALID | FE_OVERFLOW);
@@ -194,7 +188,9 @@ int main(int argc, char* argv[])
   for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
     #pragma omp barrier
-    accelerate_flow(params, cells1, obstacles1,tid);
+    if(tid==NUMTHREADS-1){
+        accelerate_flow(params, cells1, obstacles1);
+    }
     #pragma omp barrier
     double local = timestep(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,tid);
     local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,0,tid);
@@ -243,7 +239,7 @@ int main(int argc, char* argv[])
   return EXIT_SUCCESS;
 }
 
-int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1,int tid)
+inline int accelerate_flow(const t_param params, t_speed* restrict cells1, int* restrict obstacles1)
 {
   /* compute weighting factors */
   double w1 = params.density * params.accel * 0.111111111111111111111111f;
@@ -252,36 +248,106 @@ int accelerate_flow(const t_param params, t_speed* cells1, int* obstacles1,int t
   /* modify the 2nd row of the grid */
   int ii = params.nyhalf - 2;
   //int tid = omp_get_thread_num();
-  int start = tid * (params.nx/NUMTHREADS);
-  int end   = (tid+1) * (params.nx/NUMTHREADS);
+  //int start = tid * (params.nx/NUMTHREADS);
+  //int end   = (tid+1) * (params.nx/NUMTHREADS);
   //#pragma omp for
-  for (unsigned int jj = start; jj < end; jj++)
+  for (unsigned int jj = 0; jj < params.nx; jj+=VECSIZE)
   {
-    /* if the cell is not occupied and
-    ** we don't send a negative density */
-    if (!obstacles1[ii * params.nx + jj]){
-      double res1 = cells1[ii * params.nx + jj].speeds[3] - w1;
-      if(res1>0.0){
-        double res2 = cells1[ii * params.nx + jj].speeds[6] - w2;
-        if(res2>0.0){
-          double res3 = cells1[ii * params.nx + jj].speeds[7] - w2;
-          if(res3>0.0){
-             /* increase 'east-side' densities */
-            cells1[ii * params.nx + jj].speeds[1] += w1;
-            cells1[ii * params.nx + jj].speeds[5] += w2;
-            cells1[ii * params.nx + jj].speeds[8] += w2;
-            /* decrease 'west-side' densities */
-            cells1[ii * params.nx + jj].speeds[3] = res1;
-            cells1[ii * params.nx + jj].speeds[6] = res2;
-            cells1[ii * params.nx + jj].speeds[7] = res3;
-          }
+      #pragma vector aligned
+      for(int k=0;k<VECSIZE;k++){
+        if (!obstacles1[ii * params.nx + jj+k]
+         && cells1[ii*params.nx+jj+k].speeds[3]-w1>0.0
+         && cells1[ii*params.nx+jj+k].speeds[6]-w2>0.0
+         && cells1[ii*params.nx+jj+k].speeds[7]-w2>0.0){
+         
+                        /* increase 'east-side' densities */
+                        cells1[ii * params.nx + jj+k].speeds[1] += w1;
+                        cells1[ii * params.nx + jj+k].speeds[5] += w2;
+                        cells1[ii * params.nx + jj+k].speeds[8] += w2;
+                        /* decrease 'west-side' densities */
+                        cells1[ii * params.nx + jj+k].speeds[3] -= w1;
+                        cells1[ii * params.nx + jj+k].speeds[6] -= w2;
+                        cells1[ii * params.nx + jj+k].speeds[7] -= w2;
+                    
+                
+            
         }
       }
     }
-  }
 
   return EXIT_SUCCESS;
 }
+
+//inline int accelerate_flow(const t_param params, t_speed* restrict cells1, int* restrict obstacles1)
+//{
+//  /* compute weighting factors */
+//  double w1 = params.density * params.accel * 0.111111111111111111111111f;
+//  double w2 = params.density * params.accel * 0.0277777777777777777777778f;
+
+  /* modify the 2nd row of the grid */
+//  int ii = params.nyhalf - 2;
+  //int tid = omp_get_thread_num();
+  //int start = tid * (params.nx/NUMTHREADS);
+  //int end   = (tid+1) * (params.nx/NUMTHREADS);
+  //#pragma omp for
+//  for (unsigned int jj = 0; jj < params.nx; jj+=VECSIZE)
+//  {
+//    int obst=0;
+//    #pragma vector aligned
+//    for(int k=0;k<VECSIZE;k++)
+//        obst+=obstacles1[ii*params.nx+jj+k];
+    /* if the cell is not occupied and
+    ** we don't send a negative density */
+//    if(!obst){
+//      #pragma vector aligned
+//      for(int k=0;k<VECSIZE;k++){
+//        double res1 = cells1[ii * params.nx + jj+k].speeds[3] - w1;
+//        if(res1>0.0){
+//            double res2 = cells1[ii * params.nx + jj+k].speeds[6] - w2;
+//            if(res2>0.0){
+//               double res3 = cells1[ii * params.nx + jj+k].speeds[7] - w2;
+//               if(res3>0.0){
+                  /* increase 'east-side' densities */
+//                  cells1[ii * params.nx + jj+k].speeds[1] += w1;
+//                  cells1[ii * params.nx + jj+k].speeds[5] += w2;
+//                  cells1[ii * params.nx + jj+k].speeds[8] += w2;
+                  /* decrease 'west-side' densities */
+//                  cells1[ii * params.nx + jj+k].speeds[3] = res1;
+//                  cells1[ii * params.nx + jj+k].speeds[6] = res2;
+//                  cells1[ii * params.nx + jj+k].speeds[7] = res3;
+//               }
+//            }
+//        }
+//     }
+//    }
+//    else{
+//      #pragma vector aligned
+//      for(int k=0;k<VECSIZE;k++){
+//        if (!obstacles1[ii * params.nx + jj+k]){
+//            double res1 = cells1[ii * params.nx + jj+k].speeds[3] - w1;
+//            if(res1>0.0){
+//                double res2 = cells1[ii * params.nx + jj+k].speeds[6] - w2;
+//                if(res2>0.0){
+//                    double res3 = cells1[ii * params.nx + jj+k].speeds[7] - w2;
+//                    if(res3>0.0){
+                        /* increase 'east-side' densities */
+//                        cells1[ii * params.nx + jj+k].speeds[1] += w1;
+//                        cells1[ii * params.nx + jj+k].speeds[5] += w2;
+//                        cells1[ii * params.nx + jj+k].speeds[8] += w2;
+                        /* decrease 'west-side' densities */
+//                        cells1[ii * params.nx + jj+k].speeds[3] = res1;
+//                        cells1[ii * params.nx + jj+k].speeds[6] = res2;
+//                        cells1[ii * params.nx + jj+k].speeds[7] = res3;
+//                    }
+//                }
+//            }
+//        }
+//      }
+//    }
+
+//  }
+//  return EXIT_SUCCESS;
+//}
 
 //double sqrt13(double n)
 //{
@@ -606,13 +672,6 @@ inline double timestep(const t_param params, t_speed* restrict cells0, t_speed* 
             d_equ[VECSIZE*8+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*8+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*8+k]-u_sq[k]) );
         }
 
-        #pragma vector aligned
-        for(int k=0;k<VECSIZE;k++)
-        {
-            tot_u += sqrt(u_sq[k]) * densinv[k];
-        }
-
-       
         int obst=0;
         #pragma vector aligned
         for(int k=0;k<VECSIZE;k++){
@@ -631,6 +690,7 @@ inline double timestep(const t_param params, t_speed* restrict cells0, t_speed* 
                 tmp_cells[qq * params.nx + jj + k].speeds[6] = tmp[VECSIZE*6+k] + params.omega*(d_equ[VECSIZE*6+k] - tmp[VECSIZE*6+k]);
                 tmp_cells[qq * params.nx + jj + k].speeds[7] = tmp[VECSIZE*7+k] + params.omega*(d_equ[VECSIZE*7+k] - tmp[VECSIZE*7+k]);
                 tmp_cells[qq * params.nx + jj + k].speeds[8] = tmp[VECSIZE*8+k] + params.omega*(d_equ[VECSIZE*8+k] - tmp[VECSIZE*8+k]);
+                tot_u += sqrt(u_sq[k]) * densinv[k];
             }
         }
         else{
@@ -647,7 +707,7 @@ inline double timestep(const t_param params, t_speed* restrict cells0, t_speed* 
                 tmp_cells[qq * params.nx + jj + k].speeds[6] = tmp[VECSIZE*6+k] + params.omega*(d_equ[VECSIZE*6+k] - tmp[VECSIZE*6+k]);
                 tmp_cells[qq * params.nx + jj + k].speeds[7] = tmp[VECSIZE*7+k] + params.omega*(d_equ[VECSIZE*7+k] - tmp[VECSIZE*7+k]);
                 tmp_cells[qq * params.nx + jj + k].speeds[8] = tmp[VECSIZE*8+k] + params.omega*(d_equ[VECSIZE*8+k] - tmp[VECSIZE*8+k]);
-            
+                tot_u += sqrt(u_sq[k]) * densinv[k]; 
             }
             else{
                 tmp_cells[qq * params.nx + jj + k].speeds[0] = tmp[VECSIZE*0+k];
