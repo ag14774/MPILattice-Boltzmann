@@ -63,6 +63,7 @@
 #define AVVELSFILE      "av_vels.dat"
 #define BLOCKSIZE       16  //Not used
 #define NUMTHREADS      16
+#define PAR
 
 //Vector size
 #define VECSIZE 4
@@ -163,7 +164,7 @@ int main(int argc, char* argv[])
   double usrtim;                /* floating point number to record elapsed user CPU time */
   double systim;                /* floating point number to record elapsed system CPU time */
 
-  //omp_set_num_threads(1);
+  omp_set_num_threads(NUMTHREADS);
   //feenableexcept(FE_INVALID | FE_OVERFLOW);
   /* parse the command line */
   if (argc != 3)
@@ -181,24 +182,31 @@ int main(int argc, char* argv[])
   /* iterate for maxIters timesteps */
   gettimeofday(&timstr, NULL);
   tic = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
-
+#ifdef PAR
 #pragma omp parallel firstprivate(tmp_cells0,cells0, tmp_cells1, cells1)
+#endif
 {
   int tid = omp_get_thread_num();
   for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
+    #ifdef PAR
     #pragma omp barrier
+    #endif
     if(tid==NUMTHREADS-1){
-        accelerate_flow(params, cells1, obstacles1);
+      accelerate_flow(params, cells1, obstacles1);
     }
+    #ifdef PAR
     #pragma omp barrier
+    #endif
     double local = timestep(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,tid);
     local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,0,tid);
     local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf-1,tid);
     local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.nyhalf,tid);
     local += timestep_row(params, cells0, cells1, tmp_cells0, tmp_cells1, obstacles0, obstacles1,params.ny-1,tid);
     
+    #ifdef PAR
     #pragma omp atomic
+    #endif
     av_vels[tt] += local * params.free_cells_inv;
 
     t_speed* tmp = cells0;
@@ -210,12 +218,14 @@ int main(int argc, char* argv[])
     tmp_cells1= tmp;
 
 #ifdef DEBUG
-//#pragma omp single
-//    {
+#ifdef PAR
+#pragma omp single nowait
+#endif
+    {
     printf("==timestep: %d==\n", tt);
     printf("av velocity: %.12E\n", av_vels[tt]);
     printf("tot density: %.12E\n", total_density(params, cells0, cells1));
-//    }
+    }
 #endif
   }
 }
@@ -250,7 +260,6 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells1, int* 
   //int tid = omp_get_thread_num();
   //int start = tid * (params.nx/NUMTHREADS);
   //int end   = (tid+1) * (params.nx/NUMTHREADS);
-  //#pragma omp for
   for (unsigned int jj = 0; jj < params.nx; jj+=VECSIZE)
   {
       #pragma vector aligned
@@ -852,9 +861,15 @@ int initialise(const char* paramfile, const char* obstaclefile,
 
   /* main grid */
   /* Fortunately, blue crystal's compute  */
+  #ifdef PAR
   #pragma omp parallel
+  #endif
   {
+  #ifdef PAR
   int tid = omp_get_thread_num();
+  #else
+  int tid = 0;
+  #endif
   if(tid == 0){
     *cells_ptr0 = (t_speed*)malloc(sizeof(t_speed) * (params->nyhalf * params->nx));
 
@@ -870,7 +885,7 @@ int initialise(const char* paramfile, const char* obstaclefile,
 
     if (*obstacles_ptr0 == NULL) die("cannot allocate column memory for obstacles", __LINE__, __FILE__);
   }
-  if(tid == 8){
+  if(tid == NUMTHREADS/2){
     *cells_ptr1 = (t_speed*)malloc(sizeof(t_speed) * (params->nyhalf * params->nx));
 
     if (*cells_ptr1 == NULL) die("cannot allocate memory for cells", __LINE__, __FILE__);
