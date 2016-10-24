@@ -1,0 +1,11 @@
+Running on host node31-029
+Time is Wed Oct 12 11:53:44 BST 2016
+Directory is /panfs/panasas01/cosc/ag14774/Parallel-2D-Lattice-Boltzmann
+PBS job ID is 4952204.master.cm.cluster
+This jobs runs on the following machines:
+node31-029
+==done==
+Reynolds number:		1.007703420249E+01
+Elapsed time:			509.813554 (s)
+Elapsed user CPU time:		508.606680 (s)
+Elapsed system CPU time:	0.009998 (s)
