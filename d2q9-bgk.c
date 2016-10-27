@@ -63,7 +63,7 @@
 #define AVVELSFILE      "av_vels.dat"
 #define BLOCKSIZE       16  //Not used
 #define NUMTHREADS      16
-#define PAR
+#define PAR                 //Comment this out and set NUMTHREADS to 1 for serial
 
 //Vector size
 #define VECSIZE 4
@@ -287,76 +287,6 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells1, int* 
   return EXIT_SUCCESS;
 }
 
-//inline int accelerate_flow(const t_param params, t_speed* restrict cells1, int* restrict obstacles1)
-//{
-//  /* compute weighting factors */
-//  double w1 = params.density * params.accel * 0.111111111111111111111111f;
-//  double w2 = params.density * params.accel * 0.0277777777777777777777778f;
-
-  /* modify the 2nd row of the grid */
-//  int ii = params.nyhalf - 2;
-  //int tid = omp_get_thread_num();
-  //int start = tid * (params.nx/NUMTHREADS);
-  //int end   = (tid+1) * (params.nx/NUMTHREADS);
-  //#pragma omp for
-//  for (unsigned int jj = 0; jj < params.nx; jj+=VECSIZE)
-//  {
-//    int obst=0;
-//    #pragma vector aligned
-//    for(int k=0;k<VECSIZE;k++)
-//        obst+=obstacles1[ii*params.nx+jj+k];
-    /* if the cell is not occupied and
-    ** we don't send a negative density */
-//    if(!obst){
-//      #pragma vector aligned
-//      for(int k=0;k<VECSIZE;k++){
-//        double res1 = cells1[ii * params.nx + jj+k].speeds[3] - w1;
-//        if(res1>0.0){
-//            double res2 = cells1[ii * params.nx + jj+k].speeds[6] - w2;
-//            if(res2>0.0){
-//               double res3 = cells1[ii * params.nx + jj+k].speeds[7] - w2;
-//               if(res3>0.0){
-                  /* increase 'east-side' densities */
-//                  cells1[ii * params.nx + jj+k].speeds[1] += w1;
-//                  cells1[ii * params.nx + jj+k].speeds[5] += w2;
-//                  cells1[ii * params.nx + jj+k].speeds[8] += w2;
-                  /* decrease 'west-side' densities */
-//                  cells1[ii * params.nx + jj+k].speeds[3] = res1;
-//                  cells1[ii * params.nx + jj+k].speeds[6] = res2;
-//                  cells1[ii * params.nx + jj+k].speeds[7] = res3;
-//               }
-//            }
-//        }
-//     }
-//    }
-//    else{
-//      #pragma vector aligned
-//      for(int k=0;k<VECSIZE;k++){
-//        if (!obstacles1[ii * params.nx + jj+k]){
-//            double res1 = cells1[ii * params.nx + jj+k].speeds[3] - w1;
-//            if(res1>0.0){
-//                double res2 = cells1[ii * params.nx + jj+k].speeds[6] - w2;
-//                if(res2>0.0){
-//                    double res3 = cells1[ii * params.nx + jj+k].speeds[7] - w2;
-//                    if(res3>0.0){
-                        /* increase 'east-side' densities */
-//                        cells1[ii * params.nx + jj+k].speeds[1] += w1;
-//                        cells1[ii * params.nx + jj+k].speeds[5] += w2;
-//                        cells1[ii * params.nx + jj+k].speeds[8] += w2;
-                        /* decrease 'west-side' densities */
-//                        cells1[ii * params.nx + jj+k].speeds[3] = res1;
-//                        cells1[ii * params.nx + jj+k].speeds[6] = res2;
-//                        cells1[ii * params.nx + jj+k].speeds[7] = res3;
-//                    }
-//                }
-//            }
-//        }
-//      }
-//    }
-
-//  }
-//  return EXIT_SUCCESS;
-//}
 
 //double sqrt13(double n)
 //{
@@ -383,23 +313,13 @@ inline double timestep_row(const t_param params, t_speed* cells0, t_speed* cells
   static const double w2 = 1.0 / 36.0 * 4.5; /* weighting factor */
   double oneminusomega = 1.0 - params.omega;
   double tot_u = 0.0;
-  //int rows[4] = {0, params.nyhalf-1, params.nyhalf, params.ny-1};
 
-  /* loop over the cells in the grid
-  ** NB the collision step is called after
-  ** the propagate step and so values of interest
-  ** are in the scratch-space grid */
-
-  //int tid = omp_get_thread_num(); //4 threads for each of the 4 remaining special rows
-  //for(int qq=0;qq<4;qq++){
-  //int ii = rows[qq];
   int y_n = ii+1;
   if(y_n == params.ny) y_n = 0;
   int y_s = (ii == 0) ? (params.ny - 1) : (ii - 1);
   
   int start = tid * (params.nx/NUMTHREADS);
   int end   = (tid+1) * (params.nx/NUMTHREADS);
-  //printf("tid:%d, ii:%d, start:%d, end:%d\n",tid,ii,start,end);
 
   for(unsigned int jj = start; jj < end; jj++){
     /* determine indices of axis-direction neighbours
@@ -423,12 +343,6 @@ inline double timestep_row(const t_param params, t_speed* cells0, t_speed* cells
         local_density += tmp_cell->speeds[6] = getcellspeed(y_s,x_e,6,cells0,cells1,params.nyhalf,params.nx);
         local_density += tmp_cell->speeds[7] = getcellspeed(y_n,x_e,7,cells0,cells1,params.nyhalf,params.nx);
         local_density += tmp_cell->speeds[8] = getcellspeed(y_n,x_w,8,cells0,cells1,params.nyhalf,params.nx);
-        //double local_density = 0.0;
-        /* compute local density total */
-        //for (unsigned int kk = 0; kk < NSPEEDS; kk++)
-        //{
-        //    local_density += tmp_cell->speeds[kk];
-        //}
 
         /* compute x velocity component. NO DIVISION BY LOCAL DENSITY*/
         double u_x = tmp_cell->speeds[1]
@@ -479,20 +393,13 @@ inline double timestep_row(const t_param params, t_speed* cells0, t_speed* cells
         d_equ[8] = w2 * ( two_c_sq_sq*ld_sq + c_sq_ld_2*u_xy2
                             + u_xy2*u_xy2 - u_sq*c_sq ) * ldinvomega;
 
-        //printf("%d : ",ii);
         /* relaxation step */
         for (unsigned int kk = 0; kk < NSPEEDS; kk++)
         {
-            //printf("%lf  ",tmp_cell->speeds[kk]);
             tmp_cell->speeds[kk] = tmp_cell->speeds[kk]*oneminusomega;
             tmp_cell->speeds[kk] += d_equ[kk];
-            //local_density += tmp_cell->speeds[kk];
         }
-        //int dim=NSPEEDS;
-        //int l=1;       
-        //DAXPY(&dim, &oneminusomega, tmp_cell->speeds,&l,d_equ,&l);
-        //DSWAP(&dim,d_equ,&l,tmp_cell->speeds,&l);
-        //printf("\n");
+
         tot_u += sqrt(u_x*u_x + u_y*u_y) * ldinv;
     }
     else{
@@ -507,7 +414,6 @@ inline double timestep_row(const t_param params, t_speed* cells0, t_speed* cells
         tmp_cell->speeds[6] = getcellspeed(y_n,x_w,8,cells0,cells1,params.nyhalf,params.nx);
     }
   }
-  //}
   return tot_u;
 }
 
@@ -527,10 +433,8 @@ inline double timestep(const t_param params, t_speed* restrict cells0, t_speed* 
   ** the propagate step and so values of interest
   ** are in the scratch-space grid */
   
-  //int tid = omp_get_thread_num();
   int start = tid * (params.ny/NUMTHREADS);
   int end   = (tid+1) * (params.ny/NUMTHREADS);
-  //#pragma omp for nowait
   for (unsigned int ii = start; ii < end; ii++)
   {
     if (ii==0 || ii==(params.nyhalf-1) || ii==params.nyhalf || ii==(params.ny-1) ) continue; //special cases. handle them elsewhere
