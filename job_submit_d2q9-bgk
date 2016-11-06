@@ -16,8 +16,6 @@ application="./d2q9-bgk"
 #! Run options for the application
 options="input_256x256.params obstacles_256x256.dat"
 
-module add languages/intel-compiler-16
-#!module add languages/gcc-5.0
 #!export TAU_METRICS=TIME,PAPI_FP_INS,PAPI_L1_DCM
 #!export TAU_SAMPLING=1
 
@@ -36,11 +34,14 @@ echo PBS job ID is $PBS_JOBID
 echo This jobs runs on the following machines:
 echo `cat $PBS_NODEFILE | uniq`
 
-numnodes=`wc $PBS_NODEFILE | awk '{ print $1 }'`
+numcores=`wc $PBS_NODEFILE | awk '{ print $1 }'`
 
-export OMP_NUM_THREADS=$numnodes
-export OMP_PROC_BIND=TRUE
-export OMP_WAIT_POLICY=ACTIVE
+#! Create a machine file for MPI
+cat $PBS_NODEFILE > machine.file.$PBS_JOBID
+
+#! export OMP_NUM_THREADS=$numnodes
+#! export OMP_PROC_BIND=TRUE
+#! export OMP_WAIT_POLICY=ACTIVE
 
 #! Run the executable
-$application $options
+mpirun -np $numcores -machinefile machine.file.$PBS_JOBID $application $options
