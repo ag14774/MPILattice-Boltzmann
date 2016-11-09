@@ -5,7 +5,7 @@
 #PBS -o d2q9-bgk.out
 #PBS -q teaching
 #PBS -l epilogue=~ggdagw/epilogue.sh
-#PBS -l nodes=1:ppn=16,walltime=00:15:00
+#PBS -l nodes=1:ppn=1,walltime=00:15:00
 
 #! Mail to user if job aborts
 #PBS -m a
@@ -14,7 +14,7 @@
 application="./d2q9-bgk"
 
 #! Run options for the application
-options="input_256x256.params obstacles_256x256.dat"
+options="input_1024x1024.params obstacles_1024x1024.dat"
 
 #!export TAU_METRICS=TIME,PAPI_FP_INS,PAPI_L1_DCM
 #!export TAU_SAMPLING=1
@@ -39,9 +39,10 @@ numcores=`wc $PBS_NODEFILE | awk '{ print $1 }'`
 #! Create a machine file for MPI
 cat $PBS_NODEFILE > machine.file.$PBS_JOBID
 
-#! export OMP_NUM_THREADS=$numnodes
-#! export OMP_PROC_BIND=TRUE
-#! export OMP_WAIT_POLICY=ACTIVE
+#!export OMP_NUM_THREADS=$numcores
+#!export OMP_PROC_BIND=TRUE
+#!export OMP_WAIT_POLICY=ACTIVE
 
 #! Run the executable
+#!$application $options
 mpirun -np $numcores -machinefile machine.file.$PBS_JOBID $application $options
