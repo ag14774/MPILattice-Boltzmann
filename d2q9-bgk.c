@@ -63,13 +63,16 @@
 #define FINALSTATEFILE  "final_state.dat"
 #define AVVELSFILE      "av_vels.dat"
 #define BLOCKSIZE       16  //Not used
-#define NUMTHREADS      1
-#define MPI_PROCS       64
+#define NUMTHREADS      15
+#define MPI_PROCS       1
 #define MASTER          0
-//#define PAR                 //Comment this out and set NUMTHREADS to 1 for serial
+#define PAR                 //Comment this out and set NUMTHREADS to 1 for serial
 
 //Vector size
 #define VECSIZE 4
+
+MPI_Datatype MPI_ROW_OF_OBSTACLES;
+MPI_Datatype MPI_ROW_OF_CELLS;
 
 /* struct to hold the parameter values */
 struct __declspec(align(32)) t_param
@@ -114,7 +117,7 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
 //int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 //int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 double timestep(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
-                int* restrict obstacles, int tid);
+                int* restrict obstacles, int start, int end);
 double timestep_row(const t_param params, t_speed* cells0, t_speed* cells1, t_speed* tmp_cells0,
               t_speed* tmp_cells1, int* obstacles0, int* obstacles1, int ii, int tid);
 
@@ -163,15 +166,18 @@ int main(int argc, char* argv[])
 
   omp_set_num_threads(NUMTHREADS);
   
-  /* MPI Part */
-  int size, rank;
+  /************** MPI Part ********************/
+  int size=1, rank=0;
+#if MPI_PROCS>1
   MPI_Init( &argc, &argv );
   MPI_Comm_size( MPI_COMM_WORLD, &size );
   MPI_Comm_rank( MPI_COMM_WORLD, &rank );
+#endif
 
   int ny_local[MPI_PROCS];
   int displs[MPI_PROCS];
-
+  /* **************************************** */
+  
   //feenableexcept(FE_INVALID | FE_OVERFLOW);
   /* parse the command line */
   if (argc != 3)
@@ -187,6 +193,42 @@ int main(int argc, char* argv[])
   /* initialise our data structures and load values from file */
   initialise(paramfile, obstaclefile, &params, &cells, &tmp_cells, &obstacles, &av_vels,
              rank, size, ny_local, displs);
+
+  /***************************OpenMP*******************************/
+  int omp_ny_local[NUMTHREADS];
+  int omp_displs[NUMTHREADS];
+  int omp_orig_ny_local = ny_local[rank]/NUMTHREADS;
+  int omp_left = ny_local[rank]%NUMTHREADS;
+  int one_for_last_thread = 0;
+  int one_less_for_second_to_last = 0;
+  //if it is less than 3 then it is 2 given that the smallest
+  //size is 128x128 and max rank size is 64.
+  if(omp_orig_ny_local<3 && omp_left){
+    omp_left--;
+    one_for_last_thread = 1;
+  }
+  else if(omp_orig_ny_local<3 && !left){
+    one_for_last_thread = 1;
+    one_less_for_second_to_last = 1;
+  }
+  //we need to make sure that the last thread gets at least 3 rows
+  //so that accelerate_flow will not affect other rows. 
+  for(int tid=0;tid<NUMTHREADS;tid++){
+    if(tid<NUMTHREADS-2)
+        omp_ny_local[tid] = omp_orig_ny_local;
+    else if(tid == NUMTHREADS-2)
+        omp_ny_local[tid] = omp_orig_ny_local - one_less_for_second_to_last;
+    else if(tid == NUMTHREADS-1)
+        omp_ny_local[tid] = omp_orig_ny_local + one_for_last_thread;
+    if(tid<omp_left) omp_ny_local[tid]++;
+    if(tid == MASTER)
+        omp_displs[tid] = 1; //start from 1 to accommodate the halo rows
+    else
+        omp_displs[tid] = omp_displs[tid-1] + omp_ny_local[tid-1];
+  }
+
+ /* ************************************************************* */
+
   /* iterate for maxIters timesteps */
   gettimeofday(&timstr, NULL);
   tic = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
@@ -195,6 +237,8 @@ int main(int argc, char* argv[])
 #endif
 {
   int tid = omp_get_thread_num();
+  int start = omp_displs[tid];
+  int end = start + omp_ny_local[tid];
   for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
     #ifdef PAR
@@ -203,10 +247,10 @@ int main(int argc, char* argv[])
     if(tid==NUMTHREADS-1){
       accelerate_flow(params, cells, obstacles);
     }
-    #ifdef PAR
-    #pragma omp barrier
-    #endif
-    double local = timestep(params, cells, tmp_cells, obstacles,tid) * params.free_cells_inv;
+    //#ifdef PAR
+    //#pragma omp barrier
+    //#endif
+    double local = timestep(params, cells, tmp_cells, obstacles, start, end) * params.free_cells_inv;
 
     #ifdef PAR
     #pragma omp atomic
@@ -246,10 +290,9 @@ int main(int argc, char* argv[])
   write_values(params, cells, obstacles, av_vels);
   finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels);
 
-printf("testfgfd\n");
-fflush(stdout);
-
+#if MPI_PROCS>1
   MPI_Finalize();
+#endif
 
   return EXIT_SUCCESS;
 }
@@ -306,7 +349,7 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells, int* r
 //}
 
 inline double timestep(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
-                       int* restrict obstacles, int tid)
+                       int* restrict obstacles, int start, int end)
 {
   //static const double c_sq = 1.0 / 3.0; /* square of speed of sound */
   static const double ic_sq = 3.0;
@@ -634,30 +677,54 @@ int initialise(char* paramfile, const char* obstaclefile,
   */
 
   /* main grid */
+/* ******************************MPI********************************* */
+    MPI_Type_contiguous(params->nx,MPI_INT,&MPI_ROW_OF_OBSTACLES);
+    MPI_Type_commit(&MPI_ROW_OF_OBSTACLES);
 
+
+  
     int orig_ny_local = params->ny/size;
     int left = params->ny%size;
-    
+    int one_for_last_rank = 0;
+    int one_less_for_second_to_last = 0;
+    //if it is less than 3 then it is 2 given that the smallest
+    //size is 128x128 and max rank size is 64.
+    if(orig_ny_local<3 && left){
+        left--;
+        one_for_last_rank = 1;
+    }
+    else if(orig_ny_local<3 && !left){
+        one_for_last_rank = 1;
+        one_less_for_second_to_last = 1;
+    }
+    //we need to make sure that the last rank gets at least 3 rows
+    //so that accelerate_flow will not affect other rows. 
     for(int proc=0;proc<size;proc++){
-        ny_local[proc] = orig_ny_local;
+        if(proc<size-2)
+            ny_local[proc] = orig_ny_local;
+        else if(proc == size-2)
+            ny_local[proc] = orig_ny_local - one_less_for_second_to_last;
+        else if(proc == size-1)
+            ny_local[proc] = orig_ny_local + one_for_last_rank;
         if(proc<left) ny_local[proc]++;
         if(proc == MASTER)
-            displs[proc] = 0;
+            displs[proc] = 1;
         else
             displs[proc] = displs[proc-1] + ny_local[proc-1];
     }
+/*************************************************************************/
     
-    *cells_ptr = (t_speed*)malloc(sizeof(t_speed) * (ny_local[rank] * params->nx));
+    *cells_ptr = (t_speed*)malloc(sizeof(t_speed) * ((ny_local[rank]+2) * params->nx));
 
     if (*cells_ptr == NULL) die("cannot allocate memory for cells", __LINE__, __FILE__);
 
     /* 'helper' grid, used as scratch space */
-    *tmp_cells_ptr = (t_speed*)malloc(sizeof(t_speed) * (ny_local[rank] * params->nx));
+    *tmp_cells_ptr = (t_speed*)malloc(sizeof(t_speed) * ((ny_local[rank]+2) * params->nx));
 
     if (*tmp_cells_ptr == NULL) die("cannot allocate memory for tmp_cells", __LINE__, __FILE__);
 
     /* the map of obstacles */
-    *obstacles_ptr = (int*)malloc(sizeof(int) * (ny_local[rank] * params->nx));
+    *obstacles_ptr = (int*)malloc(sizeof(int) * ((ny_local[rank]+2) * params->nx));//+2 not needed but makes things easier
 
     if (*obstacles_ptr == NULL) die("cannot allocate column memory for obstacles", __LINE__, __FILE__);
 
@@ -666,7 +733,7 @@ int initialise(char* paramfile, const char* obstaclefile,
   double w1 = params->density      / 9.0;
   double w2 = params->density      / 36.0;
  
-  for (unsigned int ii = 0; ii < ny_local[rank]; ii++)
+  for (unsigned int ii = 1; ii < ny_local[rank]+1; ii++)
   {
     for (unsigned int jj = 0; jj < params->nx; jj++)
     {
@@ -687,7 +754,7 @@ int initialise(char* paramfile, const char* obstaclefile,
   }
 
   /* first set all cells in obstacle array to zero */
-  for (unsigned int ii = 0; ii < ny_local[rank]; ii++)
+  for (unsigned int ii = 1; ii < ny_local[rank]+1; ii++)
   {
     for (unsigned int jj = 0; jj < params->nx; jj++)
     {
@@ -741,10 +808,17 @@ int initialise(char* paramfile, const char* obstaclefile,
     
   }
   
-  MPI_Scatterv(obstacles_all, ny_local, displs, MPI_INT,
-               *obstacles_ptr, ny_local[rank], MPI_INT,
-               MASTER, MPI_COMM_WORLD);
+  int obstlinesize = sizeof(int) * params->nx;
 
+#if MPI_PROCS>1
+  MPI_Scatterv(obstacles_all, ny_local, displs, ,
+               *obstacles_ptr+obstlinesize, ny_local[rank], ,
+               MASTER, MPI_COMM_WORLD);
+#else
+  int* temp = *obstacles_ptr;
+  *obstacles_ptr = obstacles_all;
+  obstacles_all = temp;
+#endif
   if(obstacles_all) free(obstacles_all);
   return EXIT_SUCCESS;
 }
