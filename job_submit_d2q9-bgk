@@ -5,7 +5,7 @@
 #PBS -o d2q9-bgk.out
 #PBS -q teaching
 #PBS -l epilogue=~ggdagw/epilogue.sh
-#PBS -l nodes=1:ppn=1,walltime=00:15:00
+#PBS -l nodes=1:ppn=16,walltime=00:15:00
 
 #! Mail to user if job aborts
 #PBS -m a
