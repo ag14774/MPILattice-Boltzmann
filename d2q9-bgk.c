@@ -63,10 +63,10 @@
 #define FINALSTATEFILE  "final_state.dat"
 #define AVVELSFILE      "av_vels.dat"
 #define BLOCKSIZE       16  //Not used
-#define NUMTHREADS      15
-#define MPI_PROCS       1
+#define NUMTHREADS      1
+#define MPI_PROCS       64
 #define MASTER          0
-#define PAR                 //Comment this out and set NUMTHREADS to 1 for serial
+//#define PAR                 //Comment this out and set NUMTHREADS to 1 for serial
 
 //Vector size
 #define VECSIZE 4
@@ -168,11 +168,9 @@ int main(int argc, char* argv[])
   
   /************** MPI Part ********************/
   int size=1, rank=0;
-#if MPI_PROCS>1
   MPI_Init( &argc, &argv );
   MPI_Comm_size( MPI_COMM_WORLD, &size );
   MPI_Comm_rank( MPI_COMM_WORLD, &rank );
-#endif
 
   int ny_local[MPI_PROCS];
   int displs[MPI_PROCS];
@@ -239,6 +237,7 @@ int main(int argc, char* argv[])
   int tid = omp_get_thread_num();
   int start = omp_displs[tid];
   int end = start + omp_ny_local[tid];
+
   for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
     #ifdef PAR
@@ -290,12 +289,10 @@ int main(int argc, char* argv[])
   write_values(params, cells, obstacles, av_vels);
   finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels);
 
-#if MPI_PROCS>1
   MPI_Type_free(&MPI_ROW_OF_OBSTACLES);
   MPI_Type_free(&MPI_ROW_OF_CELLS);
   
   MPI_Finalize();
-#endif
 
   return EXIT_SUCCESS;
 }
@@ -307,7 +304,7 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells, int* r
   double w2 = params.density * params.accel * 0.0277777777777777777777778f;
 
   /* modify the 2nd row of the grid */
-  int ii = params.ny - 2;
+  int ii = params.ny - 1;
   //int tid = omp_get_thread_num();
   //int start = tid * (params.nx/NUMTHREADS);
   //int end   = (tid+1) * (params.nx/NUMTHREADS);
@@ -370,10 +367,10 @@ inline double timestep(const t_param params, t_speed* restrict cells, t_speed* r
   for (unsigned int ii = start; ii < end; ii++)
   {
     int y_n = ii + 1;
-    if(y_n == params.ny) y_n = 0;
+    if(y_n > params.ny) y_n = 1;
     int y_s = 0;
-    if (ii == 0) 
-        y_s = params.ny - 1;
+    if (ii == 1) 
+        y_s = params.ny;
     else
         y_s = ii - 1;
     for(unsigned int jj = 0; jj < params.nx; jj+=VECSIZE){
@@ -570,7 +567,7 @@ double av_velocity(const t_param params, t_speed* cells, int* obstacles)
   tot_u = 0.0;
 
   /* loop over all non-blocked cells */
-  for (unsigned int ii = 0; ii < params.ny; ii++)
+  for (unsigned int ii = 1; ii < params.ny+1; ii++)
   {
     for (unsigned int jj = 0; jj < params.nx; jj++)
     {
@@ -709,7 +706,7 @@ int initialise(char* paramfile, const char* obstaclefile,
             ny_local[proc] = orig_ny_local + one_for_last_rank;
         if(proc<left) ny_local[proc]++;
         if(proc == MASTER)
-            displs[proc] = 1;
+            displs[proc] = 0;
         else
             displs[proc] = displs[proc-1] + ny_local[proc-1];
     }
@@ -809,15 +806,10 @@ int initialise(char* paramfile, const char* obstaclefile,
     
   }
 
-#if MPI_PROCS>1
   MPI_Scatterv(obstacles_all, ny_local, displs, MPI_ROW_OF_OBSTACLES,
-               *obstacles_ptr+params->nx, ny_local[rank], MPI_ROW_OF_OBSTACLES,
+               &(*obstacles_ptr)[params->nx], ny_local[rank], MPI_ROW_OF_OBSTACLES,
                MASTER, MPI_COMM_WORLD);
-#else
-  int* temp = *obstacles_ptr;
-  *obstacles_ptr = obstacles_all;
-  obstacles_all = temp;
-#endif
+
   if(obstacles_all) free(obstacles_all);
   return EXIT_SUCCESS;
 }
@@ -856,7 +848,7 @@ double total_density(const t_param params, t_speed* cells)
 {
   double total = 0.0;  /* accumulator */
 
-  for (unsigned int ii = 0; ii < params.ny; ii++)
+  for (unsigned int ii = 1; ii < params.ny+1; ii++)
   {
     for (unsigned int jj = 0; jj < params.nx; jj++)
     {
@@ -887,7 +879,7 @@ int write_values(const t_param params, t_speed* cells, int* obstacles, double* a
     die("could not open file output file", __LINE__, __FILE__);
   }
 
-  for (unsigned int ii = 0; ii < params.ny; ii++)
+  for (unsigned int ii = 1; ii < params.ny+1; ii++)
   {
     for (unsigned int jj = 0; jj < params.nx; jj++)
     {
@@ -931,7 +923,7 @@ int write_values(const t_param params, t_speed* cells, int* obstacles, double* a
       }
 
       /* write to file */
-      fprintf(fp, "%d %d %.12E %.12E %.12E %.12E %d\n", jj, ii, u_x, u_y, u, pressure, obstacles[ii*params.nx+jj]);
+      fprintf(fp, "%d %d %.12E %.12E %.12E %.12E %d\n", jj, ii-1, u_x, u_y, u, pressure, obstacles[ii*params.nx+jj]);
     }
   }
 
