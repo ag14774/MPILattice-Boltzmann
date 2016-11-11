@@ -207,7 +207,7 @@ int main(int argc, char* argv[])
     omp_left--;
     one_for_last_thread = 1;
   }
-  else if(omp_orig_ny_local<3 && !left){
+  else if(omp_orig_ny_local<3 && !omp_left){
     one_for_last_thread = 1;
     one_less_for_second_to_last = 1;
   }
@@ -291,6 +291,9 @@ int main(int argc, char* argv[])
   finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels);
 
 #if MPI_PROCS>1
+  MPI_Type_free(&MPI_ROW_OF_OBSTACLES);
+  MPI_Type_free(&MPI_ROW_OF_CELLS);
+  
   MPI_Finalize();
 #endif
 
@@ -364,8 +367,6 @@ inline double timestep(const t_param params, t_speed* restrict cells, t_speed* r
   ** the propagate step and so values of interest
   ** are in the scratch-space grid */
   
-  int start = tid * (params.ny/NUMTHREADS);
-  int end   = (tid+1) * (params.ny/NUMTHREADS);
   for (unsigned int ii = start; ii < end; ii++)
   {
     int y_n = ii + 1;
@@ -680,8 +681,8 @@ int initialise(char* paramfile, const char* obstaclefile,
 /* ******************************MPI********************************* */
     MPI_Type_contiguous(params->nx,MPI_INT,&MPI_ROW_OF_OBSTACLES);
     MPI_Type_commit(&MPI_ROW_OF_OBSTACLES);
-
-
+    MPI_Type_contiguous(params->nx*NSPEEDS,MPI_DOUBLE,&MPI_ROW_OF_CELLS);
+    MPI_Type_commit(&MPI_ROW_OF_CELLS);
   
     int orig_ny_local = params->ny/size;
     int left = params->ny%size;
@@ -807,12 +808,10 @@ int initialise(char* paramfile, const char* obstaclefile,
     *av_vels_ptr = (double*)malloc(sizeof(double) * params->maxIters);
     
   }
-  
-  int obstlinesize = sizeof(int) * params->nx;
 
 #if MPI_PROCS>1
-  MPI_Scatterv(obstacles_all, ny_local, displs, ,
-               *obstacles_ptr+obstlinesize, ny_local[rank], ,
+  MPI_Scatterv(obstacles_all, ny_local, displs, MPI_ROW_OF_OBSTACLES,
+               *obstacles_ptr+params->nx, ny_local[rank], MPI_ROW_OF_OBSTACLES,
                MASTER, MPI_COMM_WORLD);
 #else
   int* temp = *obstacles_ptr;
