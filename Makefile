@@ -2,8 +2,8 @@
 
 EXE=d2q9-bgk
 
-CC=mpicc
-CFLAGS= -std=c99 -Wall -O3 -xAVX -m64 -march=native -mtune=native -qopenmp
+CC=mpiicc
+CFLAGS= -std=c99 -Wall -Ofast -static_mpi -xAVX -march=native -mtune=native -m64 -fopenmp
 LIBS = -lm
 
 FINAL_STATE_FILE=./final_state.dat
@@ -23,11 +23,12 @@ check:
 
 clean:
 	rm -f $(EXE)
-	rm -f machine.*
+	rm -f machine.file.*
+	rm -f host.file.*
 	rm d2q9-bgk.80s-*
 
 profile: 
-	tau_cc.sh -g $(CFLAGS) $(EXE).c $(LIBS) -o $(EXE)
+	$(CC) -g -DPROFILE $(CFLAGS) $(EXE).c $(LIBS) -o $(EXE)
 
 debug: 
 	$(CC) $(CFLAGS) -g -DDEBUG $(EXE).c $(LIBS) -o $(EXE)

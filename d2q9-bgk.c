@@ -63,10 +63,10 @@
 #define FINALSTATEFILE  "final_state.dat"
 #define AVVELSFILE      "av_vels.dat"
 #define BLOCKSIZE       16  //Not used
-#define NUMTHREADS      1
-#define MPI_PROCS       64
+#define NUMTHREADS      16  //MAX
+#define MPI_PROCS       64  //MAX
 #define MASTER          0
-//#define PAR                 //Comment this out and set NUMTHREADS to 1 for serial
+//#define PAR                 //Comment this out for no OpenMP
 
 //Vector size
 #define VECSIZE 4
@@ -104,7 +104,7 @@ typedef struct
 /* load params, allocate memory, load obstacles & initialise fluid particle densities */
 int initialise(char* paramfile, const char* obstaclefile,
                t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
-               int** obstacles_ptr,  double** av_vels_ptr, int rank, int size,
+               int** obstacles_ptr,  double** av_vels_ptr, double** av_vels_local_ptr, int rank, int size,
                int* ny_local, int* displs);
 
 void preprocess_obstacles(int* obstacles,const t_param params);
@@ -122,12 +122,12 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
 double timestep(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
                 int* restrict obstacles, int start, int end);
 
-int write_values(const t_param params, t_speed* cells, int* obstacles, double* av_vels,
+int write_values(const t_param params, t_speed* cells, int* obstacles, double* av_vels, double* av_vels_local,
                  int rank, int size, int* ny_local, int* displs);
 
 /* finalise, including freeing up allocated memory */
 int finalise(const t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
-             int** obstacles_ptr,  double** av_vels_ptr);
+             int** obstacles_ptr,  double** av_vels_ptr, double** av_vels_local_ptr);
 
 /* Sum all the densities in the grid.
 ** The total should remain constant from one timestep to the next. */
@@ -146,6 +146,10 @@ double calc_reynolds(const t_param params, t_speed* cells, int* obstacles,
 void die(const char* message, const int line, const char* file);
 void usage(const char* exe);
 
+inline void debug(int i, int v){
+    printf("***DEBUG %d*** from rank %d\n",i,v);
+}
+
 /*
 ** main program:
 ** initialise, timestep loop, finalise
@@ -162,19 +166,26 @@ int main(int argc, char* argv[])
   int*     obstacles = NULL;    /* grid indicating which cells are blocked */
   //int*     obstacles1 = NULL;
   double* av_vels   = NULL;     /* a record of the av. velocity computed for each timestep */
+  double* av_vels_local   = NULL;
   struct timeval timstr;        /* structure to hold elapsed time */
   struct rusage ru;             /* structure to hold CPU time--system and user */
   double tic, toc;              /* floating point numbers to calculate elapsed wallclock time */
   double usrtim;                /* floating point number to record elapsed user CPU time */
   double systim;                /* floating point number to record elapsed system CPU time */
 
-  omp_set_num_threads(NUMTHREADS);
-  
+  int tsize = omp_get_max_threads();
+  printf("Threads: %d\n",tsize);
   /************** MPI Part ********************/
   int size=1, rank=0;
+  //int required = MPI_THREAD_MULTIPLE;
+  //int provided;
+  //MPI_Init_thread( &argc, &argv, required, &provided );
+  //if(required!=provided) MPI_Abort(MPI_COMM_WORLD, 1);
   MPI_Init( &argc, &argv );
   MPI_Comm_size( MPI_COMM_WORLD, &size );
   MPI_Comm_rank( MPI_COMM_WORLD, &rank );
+
+  printf("Rank:%d, Size:%d\n",rank,size);
 
   int ny_local[MPI_PROCS];
   int displs[MPI_PROCS];
@@ -193,14 +204,14 @@ int main(int argc, char* argv[])
   }
 
   /* initialise our data structures and load values from file */
-  initialise(paramfile, obstaclefile, &params, &cells, &tmp_cells, &obstacles, &av_vels,
+  initialise(paramfile, obstaclefile, &params, &cells, &tmp_cells, &obstacles, &av_vels, &av_vels_local,
              rank, size, ny_local, displs);
 
   /***************************OpenMP*******************************/
   int omp_ny_local[NUMTHREADS];
   int omp_displs[NUMTHREADS];
-  int omp_orig_ny_local = ny_local[rank]/NUMTHREADS;
-  int omp_left = ny_local[rank]%NUMTHREADS;
+  int omp_orig_ny_local = ny_local[rank]/tsize;
+  int omp_left = ny_local[rank]%tsize;
   int one_for_last_thread = 0;
   int one_less_for_second_to_last = 0;
   //if it is less than 3 then it is 2 given that the smallest
@@ -215,12 +226,12 @@ int main(int argc, char* argv[])
   }
   //we need to make sure that the last thread gets at least 3 rows
   //so that accelerate_flow will not affect other rows. 
-  for(int tid=0;tid<NUMTHREADS;tid++){
-    if(tid<NUMTHREADS-2)
+  for(int tid=0;tid<tsize;tid++){
+    if(tid<tsize-2)
         omp_ny_local[tid] = omp_orig_ny_local;
-    else if(tid == NUMTHREADS-2)
+    else if(tid == tsize-2)
         omp_ny_local[tid] = omp_orig_ny_local - one_less_for_second_to_last;
-    else if(tid == NUMTHREADS-1)
+    else if(tid == tsize-1)
         omp_ny_local[tid] = omp_orig_ny_local + one_for_last_thread;
     if(tid<omp_left) omp_ny_local[tid]++;
     if(tid == MASTER)
@@ -237,10 +248,17 @@ int main(int argc, char* argv[])
   int haloBottomOffset = params.nx*(ny_local[rank]+1);
   int topRowOffset = params.nx;
   int bottomRowOffset = params.nx*ny_local[rank];
+  MPI_Request requests[4];
+
+  omp_lock_t writelock;
+  omp_init_lock(&writelock);
+  omp_set_lock(&writelock);
 
  /* ************************************************************** */
-  double ranklocal = 0;
   /* iterate for maxIters timesteps */
+#ifdef PROFILE
+  MPI_Pcontrol(1,"mainloop");
+#endif
   gettimeofday(&timstr, NULL);
   tic = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
 #ifdef PAR
@@ -250,44 +268,69 @@ int main(int argc, char* argv[])
   int tid = omp_get_thread_num();
   int start = omp_displs[tid];
   int end = start + omp_ny_local[tid];
-
+  if(start == 1) start++;
+  if(end == ny_local[rank] + 1) end--;
   for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
 
-    //MPI_Barrier(MPI_COMM_WORLD);
-
-    MPI_Sendrecv(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-                 &cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    
-    MPI_Sendrecv(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-                 &cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     #ifdef PAR
     #pragma omp barrier
     #endif
+
+    if(tid == MASTER)
+    {
+    MPI_Isend(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+              MPI_COMM_WORLD, &requests[0]);
+    MPI_Irecv(&cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+              MPI_COMM_WORLD, &requests[1]);
+
+    MPI_Isend(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+              MPI_COMM_WORLD, &requests[2]);
+    MPI_Irecv(&cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+              MPI_COMM_WORLD, &requests[3]);
+    }
+    //MPI_Sendrecv(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+    //             &cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+    //             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     
-    if(tid==NUMTHREADS-1 && rank==size-1){
+    //MPI_Sendrecv(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+    //             &cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+    //             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    //}
+   
+    if(tid==tsize-1 && rank==size-1){
       accelerate_flow(params, cells, obstacles, rank, ny_local);
     }
-    //#ifdef PAR
-    //#pragma omp barrier
-    //#endif
     
-    double local = timestep(params, cells, tmp_cells, obstacles, start, end) * params.free_cells_inv;
+    double local = timestep(params, cells, tmp_cells, obstacles, start, end);
+   
+    #ifdef PAR
+    if(tid == MASTER){
+        MPI_Waitall(4, requests, MPI_STATUSES_IGNORE);
+        omp_unset_lock(&writelock);
+        local += timestep(params, cells, tmp_cells, obstacles, 1, 2);
+        
+    }
+    if(tid == tsize-1){
+        omp_set_lock(&writelock);
+        local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1);
+    }
+    #else
+    MPI_Waitall(4,requests, MPI_STATUSES_IGNORE);
+    local += timestep(params, cells, tmp_cells, obstacles, 1, 2);
+    local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1);
+    #endif
     
+    local *= params.free_cells_inv;
     #ifdef PAR
     #pragma omp atomic
     #endif
-    ranklocal += local;
-
-    MPI_Reduce(&ranklocal,&av_vels[tt],1,MPI_DOUBLE, MPI_SUM, MASTER, MPI_COMM_WORLD);
-    ranklocal = 0;
+    av_vels_local[tt] += local;
 
     t_speed* tmp = cells;
     cells = tmp_cells;
     tmp_cells = tmp;
-
+/*
 #ifdef DEBUG
 #ifdef PAR
 #pragma omp single nowait
@@ -301,6 +344,7 @@ int main(int argc, char* argv[])
     }
     }
 #endif
+*/
   }
 }
   gettimeofday(&timstr, NULL);
@@ -310,7 +354,9 @@ int main(int argc, char* argv[])
   usrtim = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   timstr = ru.ru_stime;
   systim = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
-
+#ifdef PROFILE
+  MPI_Pcontrol(-1,"mainloop");
+#endif
   /* write final values and free memory */
   double reyn = calc_reynolds(params, cells, obstacles, rank, size, ny_local, displs);
   if(rank == MASTER)
@@ -321,8 +367,11 @@ int main(int argc, char* argv[])
     printf("Elapsed user CPU time:\t\t%.6lf (s)\n", usrtim);
     printf("Elapsed system CPU time:\t%.6lf (s)\n", systim);
   }
-  write_values(params, cells, obstacles, av_vels, rank, size, ny_local, displs);
-  finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels);
+
+  omp_destroy_lock(&writelock);
+
+  write_values(params, cells, obstacles, av_vels, av_vels_local, rank, size, ny_local, displs);
+  finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels, &av_vels_local);
 
   MPI_Type_free(&MPI_ROW_OF_OBSTACLES);
   MPI_Type_free(&MPI_ROW_OF_CELLS);
@@ -651,7 +700,7 @@ double av_velocity(const t_param params, t_speed* cells, int* obstacles,
 
 int initialise(char* paramfile, const char* obstaclefile,
                t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
-               int** obstacles_ptr, double** av_vels_ptr, int rank, int size,
+               int** obstacles_ptr, double** av_vels_ptr, double** av_vels_local_ptr, int rank, int size,
                int* ny_local, int* displs)
 {
   char   message[1024];  /* message buffer */
@@ -849,6 +898,13 @@ int initialise(char* paramfile, const char* obstaclefile,
     
   }
 
+  *av_vels_local_ptr = (double*)malloc(sizeof(double) * params->maxIters);
+
+  for(int it=0;it<params->maxIters;it++){
+      (*av_vels_local_ptr)[it] = 0;
+  }
+
+
   MPI_Bcast(&(params->free_cells_inv), 1, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
   MPI_Scatterv(obstacles_all, ny_local, displs, MPI_ROW_OF_OBSTACLES,
@@ -861,7 +917,7 @@ int initialise(char* paramfile, const char* obstaclefile,
 
 
 int finalise(const t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
-             int** obstacles_ptr,  double** av_vels_ptr)
+             int** obstacles_ptr,  double** av_vels_ptr, double** av_vels_local_ptr)
 {
   /*
   ** free up allocated memory
@@ -875,8 +931,11 @@ int finalise(const t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
   free(*obstacles_ptr);
   *obstacles_ptr = NULL;
 
-  free(*av_vels_ptr);
+  if(*av_vels_ptr != NULL)
+    free(*av_vels_ptr);
   *av_vels_ptr = NULL;
+
+  free(*av_vels_local_ptr);
 
   return EXIT_SUCCESS;
 }
@@ -914,11 +973,11 @@ double total_density(const t_param params, t_speed* cells,
   return res;
 }
 
-int write_values(const t_param params, t_speed* cells, int* obstacles, double* av_vels,
+int write_values(const t_param params, t_speed* cells, int* obstacles, double* av_vels, double* av_vels_local,
                  int rank, int size, int* ny_local, int* displs)
 {
   FILE* fp;                     /* file pointer */
-  MPI_File fh;
+  //MPI_File fh;
   char buff[100];
   const double c_sq = 1.0 / 3.0; /* sq. of speed of sound */
   double local_density;         /* per grid cell sum of densities */
@@ -927,72 +986,83 @@ int write_values(const t_param params, t_speed* cells, int* obstacles, double* a
   double u_y;                   /* y-component of velocity in grid cell */
   double u;                     /* norm--root of summed squares--of u_x and u_y */
 
-  //fp = fopen(FINALSTATEFILE, "w");
+  MPI_Reduce(av_vels_local, av_vels, params.maxIters, MPI_DOUBLE, MPI_SUM, MASTER, MPI_COMM_WORLD);
 
-  //if (fp == NULL)
-  //{
-  //  die("could not open file output file", __LINE__, __FILE__);
-  //}
-
-  MPI_File_open(MPI_COMM_WORLD, FINALSTATEFILE,
-                MPI_MODE_CREATE | MPI_MODE_WRONLY,
-                MPI_INFO_NULL, &fh);
-
-  int linesize = 96*sizeof(char);
-  MPI_File_set_view(fh, displs[rank]*params.nx*linesize,
-                    MPI_CHAR, MPI_CHAR, "native", MPI_INFO_NULL);
-
-  for (unsigned int ii = 1; ii < ny_local[rank]+1; ii++)
+  for(int proc=0;proc<size;proc++)
   {
-    for (unsigned int jj = 0; jj < params.nx; jj++)
+    MPI_Barrier(MPI_COMM_WORLD);
+    if(proc==rank)
     {
-      /* an occupied cell */
-      if (obstacles[ii*params.nx+jj])
-      {
-        u_x = u_y = u = 0.0;
-        pressure = params.density * c_sq;
-      }
-      /* no obstacle */
-      else
-      {
-        local_density = 0.0;
-        t_speed* cell = &cells[ii*params.nx+jj];
+        if(proc==MASTER)
+            fp = fopen(FINALSTATEFILE, "w");
+        else
+            fp = fopen(FINALSTATEFILE, "a");
 
-        for (unsigned int kk = 0; kk < NSPEEDS; kk++)
+        if (fp == NULL)
         {
-          local_density += cell->speeds[kk];
+            die("could not open file output file", __LINE__, __FILE__);
         }
 
-        /* compute x velocity component */
-        u_x = (cell->speeds[1]
-               + cell->speeds[5]
-               + cell->speeds[8]
-               - (cell->speeds[3]
-                  + cell->speeds[6]
-                  + cell->speeds[7]))
-              / local_density;
-        /* compute y velocity component */
-        u_y = (cell->speeds[2]
-               + cell->speeds[5]
-               + cell->speeds[6]
-               - (cell->speeds[4]
-                  + cell->speeds[7]
-                  + cell->speeds[8]))
-              / local_density;
-        /* compute norm of velocity */
-        u = sqrt((u_x * u_x) + (u_y * u_y));
-        /* compute pressure */
-        pressure = local_density * c_sq;
-      }
+    //MPI_File_open(MPI_COMM_WORLD, FINALSTATEFILE,
+    //              MPI_MODE_CREATE | MPI_MODE_WRONLY,
+    //              MPI_INFO_NULL, &fh);
 
-      /* write to file */
-      sprintf(buff, "%04d %04d %020.12E %020.12E %020.12E %020.12E %d\n", jj, ii-1+displs[rank], u_x, u_y, u, pressure, obstacles[ii*params.nx+jj]);
-      MPI_File_write(fh, buff, linesize, MPI_CHAR, MPI_STATUS_IGNORE);
+    //MPI_File_set_view(fh, displs[rank]*params.nx*linesize,
+    //                  MPI_CHAR, MPI_CHAR, "native", MPI_INFO_NULL);
+
+        for (unsigned int ii = 1; ii < ny_local[rank]+1; ii++)
+        {
+            for (unsigned int jj = 0; jj < params.nx; jj++)
+            {
+            /* an occupied cell */
+            if (obstacles[ii*params.nx+jj])
+            {
+                u_x = u_y = u = 0.0;
+                pressure = params.density * c_sq;
+            }
+            /* no obstacle */
+            else
+            {
+                local_density = 0.0;
+                t_speed* cell = &cells[ii*params.nx+jj];
+
+                for (unsigned int kk = 0; kk < NSPEEDS; kk++)
+                {
+                local_density += cell->speeds[kk];
+                }
+
+                /* compute x velocity component */
+                u_x = (cell->speeds[1]
+                    + cell->speeds[5]
+                    + cell->speeds[8]
+                    - (cell->speeds[3]
+                        + cell->speeds[6]
+                        + cell->speeds[7]))
+                    / local_density;
+                /* compute y velocity component */
+                u_y = (cell->speeds[2]
+                    + cell->speeds[5]
+                    + cell->speeds[6]
+                    - (cell->speeds[4]
+                        + cell->speeds[7]
+                        + cell->speeds[8]))
+                    / local_density;
+                /* compute norm of velocity */
+                u = sqrt((u_x * u_x) + (u_y * u_y));
+                /* compute pressure */
+                pressure = local_density * c_sq;
+            }
+
+            /* write to file */
+            fprintf(fp, "%d %d %.12E %.12E %.12E %.12E %d\n", jj, ii-1+displs[rank], u_x, u_y, u, pressure, obstacles[ii*params.nx+jj]);
+            //fprintf(fp, "%04d %04d %020.12E %020.12E %020.12E %020.12E %d\n", jj, ii-1+displs[rank], u_x, u_y, u, pressure, obstacles[ii*params.nx+jj]);
+            //MPI_File_write(fh, buff, linesize, MPI_CHAR, MPI_STATUS_IGNORE);
+            }
+        }
+        fclose(fp);
     }
   }
-
-  //fclose(fp);
-  MPI_File_close(&fh);
+  //MPI_File_close(&fh);
 
   if(rank==MASTER)
   {
