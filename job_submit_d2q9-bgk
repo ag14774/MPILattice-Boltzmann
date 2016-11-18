@@ -58,5 +58,5 @@ export I_MPI_PIN_ORDER=compact
 
 # !Run the executable
 #!$application $options
-mpirun -mps -np $numranks -hostfile host.file.$PBS_JOBID $application $options
+mpirun -np $numranks -hostfile host.file.$PBS_JOBID $application $options
 #!mpirun -np $numcores -machinefile machine.file.$PBS_JOBID $application $options
