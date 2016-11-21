@@ -50,7 +50,7 @@ cat $PBS_NODEFILE | uniq > host.file.$PBS_JOBID
 #!export OMP_PROC_BIND=TRUE
 #!export OMP_WAIT_POLICY=ACTIVE
 
-#!export I_MPI_DEBUG=5
+export I_MPI_DEBUG=5
 export I_MPI_ASYNC_PROGRESS=1
 export I_MPI_PIN_DOMAIN=core
 export I_MPI_PIN_ORDER=compact

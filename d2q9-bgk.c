@@ -51,7 +51,6 @@
 
 #include<stdio.h>
 #include<stdlib.h>
-#include<string.h>
 #include<math.h>
 #include<time.h>
 #include<sys/time.h>
@@ -122,9 +121,6 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
 //int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 float timestep(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
                 int* restrict obstacles, int start, int end);
-
-inline float timestep_boundary(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
-                               t_speed* restrict halos, int* restrict obstacles, int row);
 
 int write_values(const t_param params, t_speed* cells, int* obstacles, float* av_vels, float* av_vels_local,
                  int rank, int size, int* ny_local, int* displs);
@@ -254,24 +250,6 @@ int main(int argc, char* argv[])
   int bottomRowOffset = params.nx*ny_local[rank];
   MPI_Request requests[4];
 
-  MPI_Win win;
-
-  MPI_Info info;
-
-  MPI_Info_create(&info);
-  MPI_Info_set(info, "no_locks", "true");
-
-  /* Prepare windows */
-  t_speed* recvbuff;// = (t_speed*)malloc(sizeof(t_speed)*params.nx*2);
-  MPI_Alloc_mem(sizeof(t_speed)*params.nx*2,MPI_INFO_NULL,&recvbuff);
-  MPI_Win_create(recvbuff,2, sizeof(t_speed)*params.nx, info, MPI_COMM_WORLD, &win);
-
-  MPI_Win_fence(0, win);
-  MPI_Put(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, 1, 1, MPI_ROW_OF_CELLS, win);
-  MPI_Put(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, 0, 1, MPI_ROW_OF_CELLS, win); 
-  MPI_Win_fence(0, win);
-
-
   omp_lock_t writelock;
   omp_init_lock(&writelock);
   omp_set_lock(&writelock);
@@ -294,26 +272,22 @@ int main(int argc, char* argv[])
   if(end == ny_local[rank] + 1) end--;
   for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
+
     #ifdef PAR
     #pragma omp barrier
     #endif
 
     if(tid == MASTER)
     {
-    //MPI_Isend(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-    //          MPI_COMM_WORLD, &requests[0]);
-    //MPI_Irecv(&cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-    //          MPI_COMM_WORLD, &requests[1]);
+    MPI_Isend(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+              MPI_COMM_WORLD, &requests[0]);
+    MPI_Irecv(&cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+              MPI_COMM_WORLD, &requests[1]);
 
-    //MPI_Isend(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-    //          MPI_COMM_WORLD, &requests[2]);
-    //MPI_Irecv(&cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-    //          MPI_COMM_WORLD, &requests[3]);
-    MPI_Win_fence(MPI_MODE_NOPRECEDE|MPI_MODE_NOSTORE, win);
-    //if(rank!=MASTER)
-        MPI_Put(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, 1, 1, MPI_ROW_OF_CELLS, win);
-    //if(rank!=size-1)
-        MPI_Put(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, 0, 1, MPI_ROW_OF_CELLS, win); 
+    MPI_Isend(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+              MPI_COMM_WORLD, &requests[2]);
+    MPI_Irecv(&cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+              MPI_COMM_WORLD, &requests[3]);
     }
     //MPI_Sendrecv(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
     //             &cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
@@ -342,13 +316,9 @@ int main(int argc, char* argv[])
         local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1);
     }
     #else
-    //MPI_Waitall(2,requests, MPI_STATUSES_IGNORE);
-
-    MPI_Win_fence(MPI_MODE_NOPUT|MPI_MODE_NOSUCCEED|MPI_MODE_NOSTORE, win);
-
-    //MPI_Waitall(4,requests, MPI_STATUSES_IGNORE);
-    local += timestep_boundary(params, cells, tmp_cells, recvbuff, obstacles, 1);
-    local += timestep_boundary(params, cells, tmp_cells, recvbuff, obstacles, ny_local[rank]);
+    MPI_Waitall(4,requests, MPI_STATUSES_IGNORE);
+    local += timestep(params, cells, tmp_cells, obstacles, 1, 2);
+    local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1);
     #endif
     
     local *= params.free_cells_inv;
@@ -400,10 +370,6 @@ int main(int argc, char* argv[])
 
   omp_destroy_lock(&writelock);
 
-  MPI_Win_free(&win);
-  //free(recvbuff);
-  MPI_Free_mem(recvbuff);
-
   write_values(params, cells, obstacles, av_vels, av_vels_local, rank, size, ny_local, displs);
   finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels, &av_vels_local);
 
@@ -431,18 +397,18 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells, int* r
       #pragma vector aligned
       for(int k=0;k<VECSIZE;k++){
         if (!obstacles[ii * params.nx + jj+k]
-         && cells[ii*params.nx+jj+k].speeds[3]-2*w1>0.0
-         && cells[ii*params.nx+jj+k].speeds[6]-2*w2>0.0
-         && cells[ii*params.nx+jj+k].speeds[7]-2*w2>0.0){
+         && cells[ii*params.nx+jj+k].speeds[3]-w1>0.0
+         && cells[ii*params.nx+jj+k].speeds[6]-w2>0.0
+         && cells[ii*params.nx+jj+k].speeds[7]-w2>0.0){
          
                         /* increase 'east-side' densities */
-                        cells[ii * params.nx + jj+k].speeds[1] +=2* w1;
-                        cells[ii * params.nx + jj+k].speeds[5] +=2* w2;
-                        cells[ii * params.nx + jj+k].speeds[8] +=2* w2;
+                        cells[ii * params.nx + jj+k].speeds[1] += w1;
+                        cells[ii * params.nx + jj+k].speeds[5] += w2;
+                        cells[ii * params.nx + jj+k].speeds[8] += w2;
                         /* decrease 'west-side' densities */
-                        cells[ii * params.nx + jj+k].speeds[3] -=2* w1;
-                        cells[ii * params.nx + jj+k].speeds[6] -=2* w2;
-                        cells[ii * params.nx + jj+k].speeds[7] -=2* w2;
+                        cells[ii * params.nx + jj+k].speeds[3] -= w1;
+                        cells[ii * params.nx + jj+k].speeds[6] -= w2;
+                        cells[ii * params.nx + jj+k].speeds[7] -= w2;
                     
                 
             
@@ -451,224 +417,6 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells, int* r
     }
 
   return EXIT_SUCCESS;
-}
-
-inline float timestep_boundary(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
-                               t_speed* restrict halos, int* restrict obstacles, int row)
-{
-  //static const float c_sq = 1.0 / 3.0; /* square of speed of sound */
-  static const float ic_sq = 3.0;
-  //static const float ic_sq_sq = 9.0;
-  static const float w0 = 4.0 / 9.0;  /* weighting factor */
-  static const float w1 = 1.0 / 9.0;  /* weighting factor */
-  static const float w2 = 1.0 / 36.0; /* weighting factor */
-  float tot_u = 0.0;
-
-  int y_n = 0;
-  int y_s = 0;
-  int ii = row;
-  t_speed* restrict cells0;
-  t_speed* restrict cells1;
-  if(row==1){
-      cells0 = halos; //north is 0
-      cells1 = cells;
-      y_n = 2;
-  }
-  else{
-      cells0 = cells;
-      cells1 = &halos[params.nx];
-      y_s = row - 1;
-  }
-
-  /* loop over the cells in the grid
-  ** NB the collision step is called after
-  ** the propagate step and so values of interest
-  ** are in the scratch-space grid */
-  
-  for(unsigned int jj = 0; jj < params.nx; jj+=VECSIZE)
-  {
-    /* determine indices of axis-direction neighbours
-    ** respecting periodic boundary conditions (wrap around) */
-    float tmp[VECSIZE*NSPEEDS] __attribute__((aligned(32)));
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++){
-        int x = jj+k;
-        int x_e = x + 1;
-        if(x_e >= params.nx) x_e -= params.nx;
-        int x_w = (x == 0) ? (params.nx - 1) : (x-1);
-        tmp[VECSIZE*0+k] = cells[ii * params.nx + x].speeds[0];
-        tmp[VECSIZE*1+k] = cells[ii * params.nx + x_w].speeds[1];
-        tmp[VECSIZE*2+k] = cells0[y_s * params.nx + x].speeds[2];
-        tmp[VECSIZE*3+k] = cells[ii * params.nx + x_e].speeds[3];
-        tmp[VECSIZE*4+k] = cells1[y_n * params.nx + x].speeds[4];
-        tmp[VECSIZE*5+k] = cells0[y_s * params.nx + x_w].speeds[5];
-        tmp[VECSIZE*6+k] = cells0[y_s * params.nx + x_e].speeds[6];
-        tmp[VECSIZE*7+k] = cells1[y_n * params.nx + x_e].speeds[7];
-        tmp[VECSIZE*8+k] = cells1[y_n * params.nx + x_w].speeds[8];
-        
-    }
-
-    float densvec[VECSIZE] __attribute__((aligned(32)));
-
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++){
-        densvec[k] = tmp[VECSIZE*0+k];
-        densvec[k] += tmp[VECSIZE*1+k];
-        densvec[k] += tmp[VECSIZE*2+k];
-        densvec[k] += tmp[VECSIZE*3+k];
-        densvec[k] += tmp[VECSIZE*4+k];
-        densvec[k] += tmp[VECSIZE*5+k];
-        densvec[k] += tmp[VECSIZE*6+k];
-        densvec[k] += tmp[VECSIZE*7+k];
-        densvec[k] += tmp[VECSIZE*8+k];
-    }
-
-    float densinv[VECSIZE] __attribute__((aligned(32)));
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++)
-    {
-        densinv[k] = 1.0/densvec[k];
-    }
-
-    float u_x[VECSIZE] __attribute__((aligned(32)));
-    float u_y[VECSIZE] __attribute__((aligned(32)));
-
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++)
-    {
-        u_x[k] = tmp[VECSIZE*1+k] + tmp[VECSIZE*5+k];
-        u_x[k] += tmp[VECSIZE*8+k];
-        u_x[k] -= tmp[VECSIZE*3+k];
-        u_x[k] -= tmp[VECSIZE*6+k];
-        u_x[k] -= tmp[VECSIZE*7+k];
-        //u_x[k] *= densinv[k];
-        u_y[k] = tmp[VECSIZE*2+k] + tmp[VECSIZE*5+k];
-        u_y[k] += tmp[VECSIZE*6+k];
-        u_y[k] -= tmp[VECSIZE*4+k];
-        u_y[k] -= tmp[VECSIZE*7+k];
-        u_y[k] -= tmp[VECSIZE*8+k];
-        //u_y[k] *= densinv[k];
-    }
-
-    float u_sq[VECSIZE] __attribute__((aligned(32)));
-
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++)
-    {
-        u_sq[k] = u_x[k]*u_x[k] + u_y[k]*u_y[k];
-    }
-
-    float uvec[NSPEEDS*VECSIZE] __attribute__((aligned(32)));
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++)
-    {
-        uvec[VECSIZE*1+k] =   u_x[k];
-        uvec[VECSIZE*2+k] =            u_y[k];
-        uvec[VECSIZE*3+k] = - u_x[k];
-        uvec[VECSIZE*4+k] =          - u_y[k];
-        uvec[VECSIZE*5+k] =   u_x[k] + u_y[k];
-        uvec[VECSIZE*6+k] = - u_x[k] + u_y[k];
-        uvec[VECSIZE*7+k] = - u_x[k] - u_y[k];
-        uvec[VECSIZE*8+k] =   u_x[k] - u_y[k];
-    }
-
-    float ic_sqtimesu[NSPEEDS*VECSIZE] __attribute__((aligned(32)));
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++)
-    {
-        ic_sqtimesu[VECSIZE*1+k] = uvec[VECSIZE*1+k]*ic_sq;
-        ic_sqtimesu[VECSIZE*2+k] = uvec[VECSIZE*2+k]*ic_sq;
-        ic_sqtimesu[VECSIZE*3+k] = uvec[VECSIZE*3+k]*ic_sq;
-        ic_sqtimesu[VECSIZE*4+k] = uvec[VECSIZE*4+k]*ic_sq;
-        ic_sqtimesu[VECSIZE*5+k] = uvec[VECSIZE*5+k]*ic_sq;
-        ic_sqtimesu[VECSIZE*6+k] = uvec[VECSIZE*6+k]*ic_sq;
-        ic_sqtimesu[VECSIZE*7+k] = uvec[VECSIZE*7+k]*ic_sq;
-        ic_sqtimesu[VECSIZE*8+k] = uvec[VECSIZE*8+k]*ic_sq;
-    }
-
-    float ic_sqtimesu_sq[NSPEEDS*VECSIZE] __attribute__((aligned(32)));
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++)
-    {
-        ic_sqtimesu_sq[VECSIZE*1+k] = ic_sqtimesu[VECSIZE*1+k] * uvec[VECSIZE*1+k];
-        ic_sqtimesu_sq[VECSIZE*2+k] = ic_sqtimesu[VECSIZE*2+k] * uvec[VECSIZE*2+k];
-        ic_sqtimesu_sq[VECSIZE*3+k] = ic_sqtimesu[VECSIZE*3+k] * uvec[VECSIZE*3+k];
-        ic_sqtimesu_sq[VECSIZE*4+k] = ic_sqtimesu[VECSIZE*4+k] * uvec[VECSIZE*4+k];
-        ic_sqtimesu_sq[VECSIZE*5+k] = ic_sqtimesu[VECSIZE*5+k] * uvec[VECSIZE*5+k];
-        ic_sqtimesu_sq[VECSIZE*6+k] = ic_sqtimesu[VECSIZE*6+k] * uvec[VECSIZE*6+k];
-        ic_sqtimesu_sq[VECSIZE*7+k] = ic_sqtimesu[VECSIZE*7+k] * uvec[VECSIZE*7+k];
-        ic_sqtimesu_sq[VECSIZE*8+k] = ic_sqtimesu[VECSIZE*8+k] * uvec[VECSIZE*8+k];
-    }
-
-    float d_equ[NSPEEDS*VECSIZE] __attribute__((aligned(32)));
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++)
-    {
-        d_equ[VECSIZE*0+k] = w0 * (densvec[k] - 0.5*densinv[k]*ic_sq*u_sq[k]);
-        d_equ[VECSIZE*1+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*1+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*1+k]-u_sq[k]) );
-        d_equ[VECSIZE*2+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*2+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*2+k]-u_sq[k]) );
-        d_equ[VECSIZE*3+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*3+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*3+k]-u_sq[k]) );
-        d_equ[VECSIZE*4+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*4+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*4+k]-u_sq[k]) );
-        d_equ[VECSIZE*5+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*5+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*5+k]-u_sq[k]) );
-        d_equ[VECSIZE*6+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*6+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*6+k]-u_sq[k]) );
-        d_equ[VECSIZE*7+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*7+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*7+k]-u_sq[k]) );
-        d_equ[VECSIZE*8+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*8+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*8+k]-u_sq[k]) );
-    }
-
-    int obst=0;
-    #pragma vector aligned
-    for(int k=0;k<VECSIZE;k++){
-        obst+=obstacles[ii*params.nx+jj+k];
-    }
-
-    if(!obst){
-        #pragma vector aligned
-        for(int k=0;k<VECSIZE;k++){
-            tmp_cells[ii * params.nx + jj + k].speeds[0] = tmp[VECSIZE*0+k] + params.omega*(d_equ[VECSIZE*0+k] - tmp[VECSIZE*0+k]);
-            tmp_cells[ii * params.nx + jj + k].speeds[1] = tmp[VECSIZE*1+k] + params.omega*(d_equ[VECSIZE*1+k] - tmp[VECSIZE*1+k]);
-            tmp_cells[ii * params.nx + jj + k].speeds[2] = tmp[VECSIZE*2+k] + params.omega*(d_equ[VECSIZE*2+k] - tmp[VECSIZE*2+k]);
-            tmp_cells[ii * params.nx + jj + k].speeds[3] = tmp[VECSIZE*3+k] + params.omega*(d_equ[VECSIZE*3+k] - tmp[VECSIZE*3+k]);
-            tmp_cells[ii * params.nx + jj + k].speeds[4] = tmp[VECSIZE*4+k] + params.omega*(d_equ[VECSIZE*4+k] - tmp[VECSIZE*4+k]);
-            tmp_cells[ii * params.nx + jj + k].speeds[5] = tmp[VECSIZE*5+k] + params.omega*(d_equ[VECSIZE*5+k] - tmp[VECSIZE*5+k]);
-            tmp_cells[ii * params.nx + jj + k].speeds[6] = tmp[VECSIZE*6+k] + params.omega*(d_equ[VECSIZE*6+k] - tmp[VECSIZE*6+k]);
-            tmp_cells[ii * params.nx + jj + k].speeds[7] = tmp[VECSIZE*7+k] + params.omega*(d_equ[VECSIZE*7+k] - tmp[VECSIZE*7+k]);
-            tmp_cells[ii * params.nx + jj + k].speeds[8] = tmp[VECSIZE*8+k] + params.omega*(d_equ[VECSIZE*8+k] - tmp[VECSIZE*8+k]);
-            tot_u += sqrt(u_sq[k]) * densinv[k];
-        }
-    }
-    else{
-
-        #pragma vector aligned
-        for(int k=0;k<VECSIZE;k++){
-            if(!obstacles[ii * params.nx +jj +k]){
-                tmp_cells[ii * params.nx + jj + k].speeds[0] = tmp[VECSIZE*0+k] + params.omega*(d_equ[VECSIZE*0+k] - tmp[VECSIZE*0+k]);
-                tmp_cells[ii * params.nx + jj + k].speeds[1] = tmp[VECSIZE*1+k] + params.omega*(d_equ[VECSIZE*1+k] - tmp[VECSIZE*1+k]);
-                tmp_cells[ii * params.nx + jj + k].speeds[2] = tmp[VECSIZE*2+k] + params.omega*(d_equ[VECSIZE*2+k] - tmp[VECSIZE*2+k]);
-                tmp_cells[ii * params.nx + jj + k].speeds[3] = tmp[VECSIZE*3+k] + params.omega*(d_equ[VECSIZE*3+k] - tmp[VECSIZE*3+k]);
-                tmp_cells[ii * params.nx + jj + k].speeds[4] = tmp[VECSIZE*4+k] + params.omega*(d_equ[VECSIZE*4+k] - tmp[VECSIZE*4+k]);
-                tmp_cells[ii * params.nx + jj + k].speeds[5] = tmp[VECSIZE*5+k] + params.omega*(d_equ[VECSIZE*5+k] - tmp[VECSIZE*5+k]);
-                tmp_cells[ii * params.nx + jj + k].speeds[6] = tmp[VECSIZE*6+k] + params.omega*(d_equ[VECSIZE*6+k] - tmp[VECSIZE*6+k]);
-                tmp_cells[ii * params.nx + jj + k].speeds[7] = tmp[VECSIZE*7+k] + params.omega*(d_equ[VECSIZE*7+k] - tmp[VECSIZE*7+k]);
-                tmp_cells[ii * params.nx + jj + k].speeds[8] = tmp[VECSIZE*8+k] + params.omega*(d_equ[VECSIZE*8+k] - tmp[VECSIZE*8+k]);
-                tot_u += sqrt(u_sq[k]) * densinv[k]; 
-            }
-            else{
-                tmp_cells[ii * params.nx + jj + k].speeds[0] = tmp[VECSIZE*0+k];
-                tmp_cells[ii * params.nx + jj + k].speeds[3] = tmp[VECSIZE*1+k];
-                tmp_cells[ii * params.nx + jj + k].speeds[4] = tmp[VECSIZE*2+k];
-                tmp_cells[ii * params.nx + jj + k].speeds[1] = tmp[VECSIZE*3+k];
-                tmp_cells[ii * params.nx + jj + k].speeds[2] = tmp[VECSIZE*4+k];
-                tmp_cells[ii * params.nx + jj + k].speeds[7] = tmp[VECSIZE*5+k];
-                tmp_cells[ii * params.nx + jj + k].speeds[8] = tmp[VECSIZE*6+k];
-                tmp_cells[ii * params.nx + jj + k].speeds[5] = tmp[VECSIZE*7+k];
-                tmp_cells[ii * params.nx + jj + k].speeds[6] = tmp[VECSIZE*8+k];
-            
-            }
-        }
-    }
-  }
-
-  return tot_u;
 }
 
 
