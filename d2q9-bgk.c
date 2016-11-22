@@ -120,7 +120,7 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
 //int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 //int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 float timestep(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
-                int* restrict obstacles, int start, int end);
+                int* restrict obstacles, int start, int end, MPI_Request* requests);
 
 int write_values(const t_param params, t_speed* cells, int* obstacles, float* av_vels, float* av_vels_local,
                  int rank, int size, int* ny_local, int* displs);
@@ -173,8 +173,13 @@ int main(int argc, char* argv[])
   double usrtim;                /* floating point number to record elapsed user CPU time */
   double systim;                /* floating point number to record elapsed system CPU time */
 
-  int tsize = omp_get_max_threads();
-  printf("Threads: %d\n",tsize);
+  #ifdef PAR
+    int tsize = omp_get_max_threads();
+    //int tsize = 15;
+  #else
+    int tsize = 1;
+  #endif
+  //printf("Threads: %d\n",tsize);
   /************** MPI Part ********************/
   int size=1, rank=0;
   //int required = MPI_THREAD_MULTIPLE;
@@ -185,7 +190,7 @@ int main(int argc, char* argv[])
   MPI_Comm_size( MPI_COMM_WORLD, &size );
   MPI_Comm_rank( MPI_COMM_WORLD, &rank );
 
-  printf("Rank:%d, Size:%d\n",rank,size);
+  //printf("Rank:%d, Size:%d\n",rank,size);
 
   int ny_local[MPI_PROCS];
   int displs[MPI_PROCS];
@@ -250,10 +255,13 @@ int main(int argc, char* argv[])
   int bottomRowOffset = params.nx*ny_local[rank];
   MPI_Request requests[4];
 
+  MPI_Request* avg = (MPI_Request*)malloc(sizeof(MPI_Request)*params.maxIters);
+
   omp_lock_t writelock;
   omp_init_lock(&writelock);
   omp_set_lock(&writelock);
 
+  int flag = 0;
  /* ************************************************************** */
   /* iterate for maxIters timesteps */
 #ifdef PROFILE
@@ -265,11 +273,17 @@ int main(int argc, char* argv[])
 #pragma omp parallel firstprivate(tmp_cells,cells)
 #endif
 {
+  #ifdef PAR
   int tid = omp_get_thread_num();
   int start = omp_displs[tid];
   int end = start + omp_ny_local[tid];
+  //printf("%d: %d -- %d\n",rank,start,end);
   if(start == 1) start++;
   if(end == ny_local[rank] + 1) end--;
+  #else
+  int start = 2;
+  int end = ny_local[rank];
+  #endif
   for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
 
@@ -277,18 +291,24 @@ int main(int argc, char* argv[])
     #pragma omp barrier
     #endif
 
+    #ifdef PAR
     if(tid == MASTER)
     {
-    MPI_Isend(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-              MPI_COMM_WORLD, &requests[0]);
-    MPI_Irecv(&cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-              MPI_COMM_WORLD, &requests[1]);
+    #endif
+        MPI_Irecv(&cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+                  MPI_COMM_WORLD, &requests[0]);
+        MPI_Irecv(&cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+                  MPI_COMM_WORLD, &requests[1]);
 
-    MPI_Isend(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-              MPI_COMM_WORLD, &requests[2]);
-    MPI_Irecv(&cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-              MPI_COMM_WORLD, &requests[3]);
+        MPI_Isend(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+                  MPI_COMM_WORLD, &requests[2]);
+        MPI_Isend(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+                  MPI_COMM_WORLD, &requests[3]);
+        
+        //MPI_Testall(4, requests, &flag, MPI_STATUSES_IGNORE);
+    #ifdef PAR
     }
+    #endif
     //MPI_Sendrecv(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
     //             &cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
     //             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
@@ -298,34 +318,43 @@ int main(int argc, char* argv[])
     //             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     //}
    
+    #ifdef PAR
     if(tid==tsize-1 && rank==size-1){
+    #else
+    if(rank == size-1){
+    #endif
       accelerate_flow(params, cells, obstacles, rank, ny_local);
     }
     
-    float local = timestep(params, cells, tmp_cells, obstacles, start, end);
+    float local = timestep(params, cells, tmp_cells, obstacles, start, end, requests);
    
     #ifdef PAR
     if(tid == MASTER){
-        MPI_Waitall(4, requests, MPI_STATUSES_IGNORE);
+        MPI_Waitall(2, requests, MPI_STATUSES_IGNORE);
         omp_unset_lock(&writelock);
-        local += timestep(params, cells, tmp_cells, obstacles, 1, 2);
+        local += timestep(params, cells, tmp_cells, obstacles, 1, 2, requests);
         
     }
     if(tid == tsize-1){
         omp_set_lock(&writelock);
-        local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1);
+        local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1, requests);
     }
     #else
-    MPI_Waitall(4,requests, MPI_STATUSES_IGNORE);
-    local += timestep(params, cells, tmp_cells, obstacles, 1, 2);
-    local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1);
+    MPI_Waitall(2,requests, MPI_STATUSES_IGNORE);
+    local += timestep(params, cells, tmp_cells, obstacles, 1, 2, requests);
+    local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1, requests);
+    av_vels_local[tt] = local * params.free_cells_inv;
     #endif
     
-    local *= params.free_cells_inv;
     #ifdef PAR
+    local *= params.free_cells_inv;
     #pragma omp atomic
-    #endif
     av_vels_local[tt] += local;
+    #endif
+
+    #ifndef PAR
+    MPI_Ireduce(&av_vels_local[tt], &av_vels[tt], 1, MPI_FLOAT, MPI_SUM, MASTER, MPI_COMM_WORLD,&avg[tt]);
+    #endif
 
     t_speed* tmp = cells;
     cells = tmp_cells;
@@ -347,6 +376,11 @@ int main(int argc, char* argv[])
 */
   }
 }
+  #ifdef PAR
+  MPI_Reduce(av_vels_local, av_vels, params.maxIters, MPI_FLOAT, MPI_SUM, MASTER, MPI_COMM_WORLD);
+  #else
+  MPI_Waitall(params.maxIters,avg,MPI_STATUSES_IGNORE);
+  #endif
   gettimeofday(&timstr, NULL);
   toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   getrusage(RUSAGE_SELF, &ru);
@@ -375,6 +409,8 @@ int main(int argc, char* argv[])
 
   MPI_Type_free(&MPI_ROW_OF_OBSTACLES);
   MPI_Type_free(&MPI_ROW_OF_CELLS);
+
+  free(avg);
   
   MPI_Finalize();
 
@@ -397,9 +433,9 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells, int* r
       #pragma vector aligned
       for(int k=0;k<VECSIZE;k++){
         if (!obstacles[ii * params.nx + jj+k]
-         && cells[ii*params.nx+jj+k].speeds[3]-w1>0.0
-         && cells[ii*params.nx+jj+k].speeds[6]-w2>0.0
-         && cells[ii*params.nx+jj+k].speeds[7]-w2>0.0){
+         && cells[ii*params.nx+jj+k].speeds[3]-w1>0.0f
+         && cells[ii*params.nx+jj+k].speeds[6]-w2>0.0f
+         && cells[ii*params.nx+jj+k].speeds[7]-w2>0.0f){
          
                         /* increase 'east-side' densities */
                         cells[ii * params.nx + jj+k].speeds[1] += w1;
@@ -433,23 +469,24 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells, int* r
 //}
 
 inline float timestep(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
-                       int* restrict obstacles, int start, int end)
+                       int* restrict obstacles, int start, int end, MPI_Request* requests)
 {
   //static const float c_sq = 1.0 / 3.0; /* square of speed of sound */
-  static const float ic_sq = 3.0;
+  static const float ic_sq = 3.0f;
   //static const float ic_sq_sq = 9.0;
-  static const float w0 = 4.0 / 9.0;  /* weighting factor */
-  static const float w1 = 1.0 / 9.0;  /* weighting factor */
-  static const float w2 = 1.0 / 36.0; /* weighting factor */
-  float tot_u = 0.0;
+  static const float w0 = 4.0f / 9.0f;  /* weighting factor */
+  static const float w1 = 1.0f / 9.0f;  /* weighting factor */
+  static const float w2 = 1.0f / 36.0f; /* weighting factor */
+  float tot_u = 0.0f;
 
   /* loop over the cells in the grid
   ** NB the collision step is called after
   ** the propagate step and so values of interest
   ** are in the scratch-space grid */
-  
+  int flag = 0;
   for (unsigned int ii = start; ii < end; ii++)
   {
+
     int y_n = ii + 1;
     int y_s = ii - 1;
     //int y_n = ii + 1;
@@ -500,7 +537,7 @@ inline float timestep(const t_param params, t_speed* restrict cells, t_speed* re
         #pragma vector aligned
         for(int k=0;k<VECSIZE;k++)
         {
-            densinv[k] = 1.0/densvec[k];
+            densinv[k] = 1.0f/densvec[k];
         }
 
         float u_x[VECSIZE] __attribute__((aligned(32)));
@@ -577,15 +614,15 @@ inline float timestep(const t_param params, t_speed* restrict cells, t_speed* re
         #pragma vector aligned
         for(int k=0;k<VECSIZE;k++)
         {
-            d_equ[VECSIZE*0+k] = w0 * (densvec[k] - 0.5*densinv[k]*ic_sq*u_sq[k]);
-            d_equ[VECSIZE*1+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*1+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*1+k]-u_sq[k]) );
-            d_equ[VECSIZE*2+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*2+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*2+k]-u_sq[k]) );
-            d_equ[VECSIZE*3+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*3+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*3+k]-u_sq[k]) );
-            d_equ[VECSIZE*4+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*4+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*4+k]-u_sq[k]) );
-            d_equ[VECSIZE*5+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*5+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*5+k]-u_sq[k]) );
-            d_equ[VECSIZE*6+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*6+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*6+k]-u_sq[k]) );
-            d_equ[VECSIZE*7+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*7+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*7+k]-u_sq[k]) );
-            d_equ[VECSIZE*8+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*8+k] + 0.5 * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*8+k]-u_sq[k]) );
+            d_equ[VECSIZE*0+k] = w0 * (densvec[k] - 0.5f*densinv[k]*ic_sq*u_sq[k]);
+            d_equ[VECSIZE*1+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*1+k] + 0.5f * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*1+k]-u_sq[k]) );
+            d_equ[VECSIZE*2+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*2+k] + 0.5f * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*2+k]-u_sq[k]) );
+            d_equ[VECSIZE*3+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*3+k] + 0.5f * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*3+k]-u_sq[k]) );
+            d_equ[VECSIZE*4+k] = w1 * (densvec[k] + ic_sqtimesu[VECSIZE*4+k] + 0.5f * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*4+k]-u_sq[k]) );
+            d_equ[VECSIZE*5+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*5+k] + 0.5f * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*5+k]-u_sq[k]) );
+            d_equ[VECSIZE*6+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*6+k] + 0.5f * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*6+k]-u_sq[k]) );
+            d_equ[VECSIZE*7+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*7+k] + 0.5f * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*7+k]-u_sq[k]) );
+            d_equ[VECSIZE*8+k] = w2 * (densvec[k] + ic_sqtimesu[VECSIZE*8+k] + 0.5f * densinv[k]*ic_sq * (ic_sqtimesu_sq[VECSIZE*8+k]-u_sq[k]) );
         }
 
         int obst=0;
@@ -652,7 +689,7 @@ float av_velocity(const t_param params, t_speed* cells, int* obstacles,
   float tot_u;          /* accumulated magnitudes of velocity for each cell */
 
   /* initialise */
-  tot_u = 0.0;
+  tot_u = 0.0f;
 
   /* loop over all non-blocked cells */
   for (unsigned int ii = 1; ii < ny_local[rank]+1; ii++)
@@ -663,7 +700,7 @@ float av_velocity(const t_param params, t_speed* cells, int* obstacles,
       if (!obstacles[ii*params.nx+jj])
       {
         /* local density total */
-        float local_density = 0.0;
+        float local_density = 0.0f;
 
         for (unsigned int kk = 0; kk < NSPEEDS; kk++)
         {
@@ -819,9 +856,9 @@ int initialise(char* paramfile, const char* obstaclefile,
     if (*obstacles_ptr == NULL) die("cannot allocate column memory for obstacles", __LINE__, __FILE__);
 
   /* initialise densities */
-  float w0 = params->density * 4.0 / 9.0;
-  float w1 = params->density      / 9.0;
-  float w2 = params->density      / 36.0;
+  float w0 = params->density * 4.0f / 9.0f;
+  float w1 = params->density      / 9.0f;
+  float w2 = params->density      / 36.0f;
  
   for (unsigned int ii = 1; ii < ny_local[rank]+1; ii++)
   {
@@ -889,7 +926,7 @@ int initialise(char* paramfile, const char* obstaclefile,
         obstacles_all[yy*params->nx+xx]=blocked;
         
     }
-    params->free_cells_inv = 1.0/numOfFreeCells;
+    params->free_cells_inv = 1.0f/numOfFreeCells;
 
     /* and close the file */
     fclose(fp);
@@ -901,7 +938,7 @@ int initialise(char* paramfile, const char* obstaclefile,
   *av_vels_local_ptr = (float*)malloc(sizeof(float) * params->maxIters);
 
   for(int it=0;it<params->maxIters;it++){
-      (*av_vels_local_ptr)[it] = 0;
+      (*av_vels_local_ptr)[it] = 0.0f;
   }
 
 
@@ -944,7 +981,7 @@ int finalise(const t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
 float calc_reynolds(const t_param params, t_speed* cells, int* obstacles,
                      int rank, int size, int* ny_local, int* displs)
 {
-  const float viscosity = 1.0 / 6.0 * (2.0 / params.omega - 1.0);
+  const float viscosity = 1.0f / 6.0f * (2.0f / params.omega - 1.0f);
 
   return av_velocity(params, cells, obstacles, rank, size, ny_local, displs) * params.reynolds_dim / viscosity;
 }
@@ -953,7 +990,7 @@ float calc_reynolds(const t_param params, t_speed* cells, int* obstacles,
 float total_density(const t_param params, t_speed* cells,
                      int rank, int size, int* ny_local, int* displs)
 {
-  float total = 0.0;  /* accumulator */
+  float total = 0.0f;  /* accumulator */
 
   for (unsigned int ii = 1; ii < ny_local[rank]+1; ii++)
   {
@@ -979,14 +1016,14 @@ int write_values(const t_param params, t_speed* cells, int* obstacles, float* av
   FILE* fp;                     /* file pointer */
   //MPI_File fh;
   char buff[100];
-  const float c_sq = 1.0 / 3.0; /* sq. of speed of sound */
+  const float c_sq = 1.0f / 3.0f; /* sq. of speed of sound */
   float local_density;         /* per grid cell sum of densities */
   float pressure;              /* fluid pressure in grid cell */
   float u_x;                   /* x-component of velocity in grid cell */
   float u_y;                   /* y-component of velocity in grid cell */
   float u;                     /* norm--root of summed squares--of u_x and u_y */
 
-  MPI_Reduce(av_vels_local, av_vels, params.maxIters, MPI_FLOAT, MPI_SUM, MASTER, MPI_COMM_WORLD);
+  //MPI_Reduce(av_vels_local, av_vels, params.maxIters, MPI_FLOAT, MPI_SUM, MASTER, MPI_COMM_WORLD);
 
   for(int proc=0;proc<size;proc++)
   {
@@ -1017,13 +1054,13 @@ int write_values(const t_param params, t_speed* cells, int* obstacles, float* av
             /* an occupied cell */
             if (obstacles[ii*params.nx+jj])
             {
-                u_x = u_y = u = 0.0;
+                u_x = u_y = u = 0.0f;
                 pressure = params.density * c_sq;
             }
             /* no obstacle */
             else
             {
-                local_density = 0.0;
+                local_density = 0.0f;
                 t_speed* cell = &cells[ii*params.nx+jj];
 
                 for (unsigned int kk = 0; kk < NSPEEDS; kk++)
