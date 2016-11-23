@@ -66,7 +66,7 @@
 #define NUMTHREADS      16  //MAX
 #define MPI_PROCS       64  //MAX
 #define MASTER          0
-//#define PAR                 //Comment this out for no OpenMP
+#define PAR                 //Comment this out for no OpenMP
 
 //Vector size
 #define VECSIZE 8
@@ -120,7 +120,7 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
 //int rebound(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 //int collision(const t_param params, t_speed** cells_ptr, t_speed** tmp_cells_ptr, int* obstacles);
 float timestep(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
-                int* restrict obstacles, int start, int end, MPI_Request* requests);
+                int* restrict obstacles, int start, int end);
 
 int write_values(const t_param params, t_speed* cells, int* obstacles, float* av_vels, float* av_vels_local,
                  int rank, int size, int* ny_local, int* displs);
@@ -170,19 +170,19 @@ int main(int argc, char* argv[])
   double systim;                /* floating point number to record elapsed system CPU time */
 
   #ifdef PAR
-    int tsize = omp_get_max_threads();
-    //int tsize = 15;
+    //int tsize = omp_get_max_threads();
+    int tsize = 15;
   #else
     int tsize = 1;
   #endif
   //printf("Threads: %d\n",tsize);
   /************** MPI Part ********************/
   int size=1, rank=0;
-  //int required = MPI_THREAD_MULTIPLE;
-  //int provided;
-  //MPI_Init_thread( &argc, &argv, required, &provided );
+  int required = MPI_THREAD_SERIALIZED;
+  int provided;
+  MPI_Init_thread( &argc, &argv, required, &provided );
   //if(required!=provided) MPI_Abort(MPI_COMM_WORLD, 1);
-  MPI_Init( &argc, &argv );
+  //MPI_Init( &argc, &argv );
   MPI_Comm_size( MPI_COMM_WORLD, &size );
   MPI_Comm_rank( MPI_COMM_WORLD, &rank );
 
@@ -249,14 +249,6 @@ int main(int argc, char* argv[])
   int haloBottomOffset = params.nx*(ny_local[rank]+1);
   int topRowOffset = params.nx;
   int bottomRowOffset = params.nx*ny_local[rank];
-  MPI_Request requests[4];
-  MPI_Request requests2[4];
-
-  MPI_Request* lookup[2];
-  lookup[0] = requests;
-  lookup[1] = requests2;
-  int reqIndex = 0;
-  MPI_Request* curReq;
 
   omp_lock_t writelock;
   omp_init_lock(&writelock);
@@ -277,120 +269,60 @@ int main(int argc, char* argv[])
 #endif
   gettimeofday(&timstr, NULL);
   tic = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
-#ifdef PAR
-#pragma omp parallel private(curReq,reqIndex) firstprivate(tmp_cells,cells)
-#endif
+#pragma omp parallel firstprivate(tmp_cells,cells)
 {
-  #ifdef PAR
   int tid = omp_get_thread_num();
   int start = omp_displs[tid];
   int end = start + omp_ny_local[tid];
   //printf("%d: %d -- %d\n",rank,start,end);
   if(start == 1) start++;
   if(end == ny_local[rank] + 1) end--;
-  #else
-  int start = 2;
-  int end = ny_local[rank];
-  #endif
-  MPI_Recv_init(&cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-                MPI_COMM_WORLD, &requests[0]);
-  MPI_Recv_init(&cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-                MPI_COMM_WORLD, &requests[1]);
-
-  MPI_Send_init(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-                MPI_COMM_WORLD, &requests[2]);
-  MPI_Send_init(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-                MPI_COMM_WORLD, &requests[3]);
-  
-  MPI_Recv_init(&tmp_cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-                MPI_COMM_WORLD, &requests2[0]);
-  MPI_Recv_init(&tmp_cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-                MPI_COMM_WORLD, &requests2[1]);
-
-  MPI_Send_init(&tmp_cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-                MPI_COMM_WORLD, &requests2[2]);
-  MPI_Send_init(&tmp_cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-                MPI_COMM_WORLD, &requests2[3]);
 
   for (unsigned int tt = 0; tt < params.maxIters;tt++)
   {
 
-    #ifdef PAR
     #pragma omp barrier
-    #endif
 
-    #ifdef PAR
-    if(tid == MASTER)
+    if(tid == NUMTHREADS-1)
     {
-    #endif
-        curReq = lookup[reqIndex];
-        MPI_Startall(4, curReq);
-        reqIndex ^= 1;
-        //MPI_Testall(4, curReq, &flag, MPI_STATUSES_IGNORE);
-    #ifdef PAR
-    }
-    #endif
-    //MPI_Sendrecv(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-    //             &cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-    //             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      //  printf("TID: %d\n",tid);
+    MPI_Sendrecv(&cells[topRowOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+                 &cells[haloBottomOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     
-    //MPI_Sendrecv(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
-    //             &cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
-    //             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    //}
+    MPI_Sendrecv(&cells[bottomRowOffset], 1, MPI_ROW_OF_CELLS, bottom, tag,
+                 &cells[haloTopOffset], 1, MPI_ROW_OF_CELLS, top, tag,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        
+        omp_unset_lock(&writelock);
+    }
    
-    #ifdef PAR
+    if(tid!=NUMTHREADS-1)
+    {
+
     if(tid==tsize-1 && rank==size-1){
-    #else
-    if(rank == size-1){
-    #endif
       accelerate_flow(params, cells, obstacles, rank, ny_local);
     }
     
-    float local = timestep(params, cells, tmp_cells, obstacles, start, end, requests);
+    float local = timestep(params, cells, tmp_cells, obstacles, start, end);
    
-    #ifdef PAR
     if(tid == MASTER){
-        MPI_Waitall(4, curReq, MPI_STATUSES_IGNORE);
-        omp_unset_lock(&writelock);
-        local += timestep(params, cells, tmp_cells, obstacles, 1, 2, requests);
-        
-    }
-    if(tid == tsize-1){
         omp_set_lock(&writelock);
-        local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1, requests);
+        local += timestep(params, cells, tmp_cells, obstacles, 1, 2);
+        local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1);
     }
-    #else
-    MPI_Waitall(4,curReq, MPI_STATUSES_IGNORE);
-    local += timestep(params, cells, tmp_cells, obstacles, 1, 2, requests);
-    local += timestep(params, cells, tmp_cells, obstacles, ny_local[rank], ny_local[rank]+1, requests);
-    av_vels_local[tt] = local * params.free_cells_inv;
-    #endif
+    //printf("test:%d %d\n",rank,tid);
     
-    #ifdef PAR
     local *= params.free_cells_inv;
+    
     #pragma omp atomic
     av_vels_local[tt] += local;
-    #endif
+    
+    }
 
     t_speed* tmp = cells;
     cells = tmp_cells;
     tmp_cells = tmp;
-/*
-#ifdef DEBUG
-#ifdef PAR
-#pragma omp single nowait
-#endif
-    {
-    float dens = total_density(params, cells, rank, size, ny_local, displs);
-    if(rank==MASTER){
-        printf("==timestep: %d==\n", tt);
-        printf("av velocity: %.12E\n", av_vels[tt]);
-        printf("tot density: %.12E\n", dens);
-    }
-    }
-#endif
-*/
   }
 }
   MPI_Reduce(av_vels_local, av_vels, params.maxIters, MPI_FLOAT, MPI_SUM, MASTER, MPI_COMM_WORLD);
@@ -423,11 +355,6 @@ int main(int argc, char* argv[])
 
   //int dummy;
   //MPI_Buffer_detach(&userbuff, &dummy);
-
-  MPI_Request_free(&requests[0]);
-  MPI_Request_free(&requests[1]);
-  MPI_Request_free(&requests[2]);
-  MPI_Request_free(&requests[3]);
 
   MPI_Type_free(&MPI_ROW_OF_OBSTACLES);
   MPI_Type_free(&MPI_ROW_OF_CELLS);
@@ -491,7 +418,7 @@ inline int accelerate_flow(const t_param params, t_speed* restrict cells, int* r
 //}
 
 inline float timestep(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells,
-                       int* restrict obstacles, int start, int end, MPI_Request* requests)
+                       int* restrict obstacles, int start, int end)
 {
   //static const float c_sq = 1.0 / 3.0; /* square of speed of sound */
   static const float ic_sq = 3.0f;
