@@ -3,7 +3,7 @@
 EXE=d2q9-bgk
 
 CC=mpiicc
-CFLAGS= -std=c99 -Wall -Ofast -static_mpi -xAVX -march=native -mtune=native -m64 -fopenmp -D NOFUNCCALL -qopt-report=5 -qopt-report-phase=vec
+CFLAGS= -std=c99 -Wall -O3 -static_mpi -static-intel -xAVX -march=native -mtune=native -m64 -qopenmp
 LIBS = -lm
 
 FINAL_STATE_FILE=./final_state.dat
@@ -28,7 +28,7 @@ clean:
 	rm d2q9-bgk.80s-*
 
 profile: 
-	$(CC) -g $(CFLAGS) $(EXE).c $(LIBS) -o $(EXE)
+	$(CC) -g -trace -DPROFILE $(CFLAGS) $(EXE).c $(LIBS) -o $(EXE)
 
 debug: 
 	$(CC) $(CFLAGS) -g -DDEBUG $(EXE).c $(LIBS) -o $(EXE)

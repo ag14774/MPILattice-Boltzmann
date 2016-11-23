@@ -255,7 +255,7 @@ int main(int argc, char* argv[])
   int bottomRowOffset = params.nx*ny_local[rank];
   MPI_Request requests[4];
 
-  MPI_Request* avg = (MPI_Request*)malloc(sizeof(MPI_Request)*params.maxIters);
+  //MPI_Request* avg = (MPI_Request*)malloc(sizeof(MPI_Request)*params.maxIters);
 
   omp_lock_t writelock;
   omp_init_lock(&writelock);
@@ -353,7 +353,7 @@ int main(int argc, char* argv[])
     #endif
 
     #ifndef PAR
-    MPI_Ireduce(&av_vels_local[tt], &av_vels[tt], 1, MPI_FLOAT, MPI_SUM, MASTER, MPI_COMM_WORLD,&avg[tt]);
+    //MPI_Ireduce(&av_vels_local[tt], &av_vels[tt], 1, MPI_FLOAT, MPI_SUM, MASTER, MPI_COMM_WORLD,&avg[tt]);
     #endif
 
     t_speed* tmp = cells;
@@ -376,11 +376,11 @@ int main(int argc, char* argv[])
 */
   }
 }
-  #ifdef PAR
+  //#ifdef PAR
   MPI_Reduce(av_vels_local, av_vels, params.maxIters, MPI_FLOAT, MPI_SUM, MASTER, MPI_COMM_WORLD);
-  #else
-  MPI_Waitall(params.maxIters,avg,MPI_STATUSES_IGNORE);
-  #endif
+  //#else
+  //MPI_Waitall(params.maxIters,avg,MPI_STATUSES_IGNORE);
+  //#endif
   gettimeofday(&timstr, NULL);
   toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   getrusage(RUSAGE_SELF, &ru);
@@ -403,14 +403,15 @@ int main(int argc, char* argv[])
   }
 
   omp_destroy_lock(&writelock);
-
+  #ifndef PROFILE
   write_values(params, cells, obstacles, av_vels, av_vels_local, rank, size, ny_local, displs);
+  #endif
   finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels, &av_vels_local);
 
   MPI_Type_free(&MPI_ROW_OF_OBSTACLES);
   MPI_Type_free(&MPI_ROW_OF_CELLS);
 
-  free(avg);
+  //free(avg);
   
   MPI_Finalize();
 
@@ -483,7 +484,6 @@ inline float timestep(const t_param params, t_speed* restrict cells, t_speed* re
   ** NB the collision step is called after
   ** the propagate step and so values of interest
   ** are in the scratch-space grid */
-  int flag = 0;
   for (unsigned int ii = start; ii < end; ii++)
   {
 
