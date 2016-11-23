@@ -1,13 +1,12 @@
 mpsvars.sh: Warning: Hardware events collection is disabled by default. To enable it, run mpsvars.sh with --vtune (recommended) or --papi option.
 Running on host node31-033
-Time is Wed Nov 23 01:54:42 GMT 2016
+Time is Wed Nov 23 04:36:33 GMT 2016
 Directory is /panfs/panasas01/cosc/ag14774/MPILattice-Boltzmann
-PBS job ID is 5154079.master.cm.cluster
+PBS job ID is 5154320.master.cm.cluster
 This jobs runs on the following machines:
 node31-033 node31-036 node31-035 node31-034
 ==done==
 Reynolds number:		3.376321315765E+00
-Elapsed time:			6.173706 (s)
-Elapsed user CPU time:		5.927098 (s)
-Elapsed system CPU time:	0.432934 (s)
-[0] Intel(R) Trace Collector INFO: Writing tracefile d2q9-bgk.stf in /panfs/panasas01/cosc/ag14774/MPILattice-Boltzmann
+Elapsed time:			5.938240 (s)
+Elapsed user CPU time:		5.645141 (s)
+Elapsed system CPU time:	0.409937 (s)
