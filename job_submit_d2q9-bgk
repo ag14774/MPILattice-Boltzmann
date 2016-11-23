@@ -5,7 +5,7 @@
 #PBS -o d2q9-bgk.out
 #PBS -q teaching
 #PBS -l epilogue=~ggdagw/epilogue.sh
-#PBS -l nodes=4:ppn=16,walltime=00:02:00
+#PBS -l nodes=4:ppn=16,walltime=00:20:00
 
 #! Mail to user if job aborts
 #PBS -m a
@@ -16,8 +16,8 @@ application="./d2q9-bgk"
 #! Run options for the application
 options="input_1024x1024.params obstacles_1024x1024.dat"
 
-numthreads=16
-numranks=4
+numthreads=1
+numranks=64
 
 #!module add intel-cluster-studio/compiler/64/13.1/117
 #!module add intel-mpi/64/4.1.0/024
@@ -47,18 +47,18 @@ numcores=`wc $PBS_NODEFILE | awk '{ print $1 }'`
 cat $PBS_NODEFILE > machine.file.$PBS_JOBID
 cat $PBS_NODEFILE | uniq > host.file.$PBS_JOBID
 
-export OMP_NUM_THREADS=$numthreads
-export OMP_PROC_BIND=TRUE
-export OMP_WAIT_POLICY=ACTIVE
+#!export OMP_NUM_THREADS=$numthreads
+#!export OMP_PROC_BIND=TRUE
+#!export OMP_WAIT_POLICY=ACTIVE
 
-export I_MPI_DEBUG=5
+#!export I_MPI_DEBUG=5
 export I_MPI_ASYNC_PROGRESS=1
 #!export I_MPI_ASYNC_PROGRESS_PIN=yes
-export I_MPI_PIN_DOMAIN=omp
+export I_MPI_PIN_DOMAIN=core
 export I_MPI_PIN_ORDER=compact
 #!export I_MPI_STATS=all
 
 # !Run the executable
 #!$application $options
-mpirun -np $numranks -perhost 1 -hostfile host.file.$PBS_JOBID $application $options
+mpirun -np $numranks -hostfile host.file.$PBS_JOBID $application $options
 #!mpirun -np $numcores -machinefile machine.file.$PBS_JOBID $application $options

@@ -3,7 +3,7 @@
 EXE=d2q9-bgk
 
 CC=mpiicc
-CFLAGS= -std=c99 -Wall -Ofast -static_mpi -static-intel -xAVX -march=native -mtune=native -m64 -qopenmp
+CFLAGS= -std=c99 -Wall -O3 -static_mpi -static-intel -xAVX -march=native -mtune=native -m64 -qopenmp
 LIBS = -lm
 
 FINAL_STATE_FILE=./final_state.dat
