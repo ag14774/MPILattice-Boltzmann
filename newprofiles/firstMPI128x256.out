@@ -1,0 +1,11 @@
+Running on host node31-036
+Time is Thu Nov 24 05:14:25 GMT 2016
+Directory is /panfs/panasas01/cosc/ag14774/MPILattice-Boltzmann
+PBS job ID is 5166009.master.cm.cluster
+This jobs runs on the following machines:
+node31-036 node31-039 node31-038 node31-037
+==done==
+Reynolds number:		3.718483846375E+01
+Elapsed time:			3.127396 (s)
+Elapsed user CPU time:		3.026539 (s)
+Elapsed system CPU time:	0.262960 (s)
