@@ -1,12 +1,12 @@
 mpsvars.sh: Warning: Hardware events collection is disabled by default. To enable it, run mpsvars.sh with --vtune (recommended) or --papi option.
-Running on host node31-033
-Time is Wed Nov 23 04:36:33 GMT 2016
+Running on host node31-037
+Time is Fri Nov 25 00:56:39 GMT 2016
 Directory is /panfs/panasas01/cosc/ag14774/MPILattice-Boltzmann
-PBS job ID is 5154320.master.cm.cluster
+PBS job ID is 5172432.master.cm.cluster
 This jobs runs on the following machines:
-node31-033 node31-036 node31-035 node31-034
+node31-037 node47-015 node31-039 node31-038
 ==done==
 Reynolds number:		3.376321315765E+00
-Elapsed time:			5.938240 (s)
-Elapsed user CPU time:		5.645141 (s)
-Elapsed system CPU time:	0.409937 (s)
+Elapsed time:			5.903640 (s)
+Elapsed user CPU time:		5.672137 (s)
+Elapsed system CPU time:	0.302953 (s)
